@@ -17,6 +17,7 @@
 #       * Home services where tagged (plumber, electrician, roofer, etc.)
 #   - Resolves websites (direct tag, Wikidata, Nominatim, Foursquare)
 #   - Deduplicates by domain, checks robots.txt, checks site is up
+#   - Filters out obviously non-English websites (based on lang/meta headers)
 #   - Writes leads to CSV
 #   - Fills Trello template cards with:
 #       Company, Website
@@ -148,6 +149,7 @@ STATS = {
     "skip_dupe_domain": 0,
     "skip_robots": 0,
     "skip_fetch": 0,
+    "skip_lang": 0,
     "website_direct": 0,
     "website_overpass_name": 0,
     "website_nominatim": 0,
@@ -281,6 +283,65 @@ def fetch(url):
     r = SESS.get(url, timeout=30)
     r.raise_for_status()
     return r
+
+# ---------- simple language detection helpers (for English-only filter) ----------
+
+def _normalize_lang_code(val: str) -> str:
+    """
+    Normalize language code like:
+      'en-US,en;q=0.9' -> 'en-us'
+      'fr-CH'          -> 'fr-ch'
+    Returns empty string if nothing usable.
+    """
+    if not val:
+        return ""
+    v = val.strip()
+    if not v:
+        return ""
+    v = v.split(",")[0].strip()  # take first entry
+    v = v.replace("_", "-").lower()
+    return v
+
+def detect_page_language(resp) -> str:
+    """
+    Best-effort detection of page language using:
+      - Content-Language header
+      - <html lang="...">
+      - <meta http-equiv="content-language" ...>
+
+    Returns normalized language code like 'en', 'en-gb', 'fr', etc.,
+    or "" if we can't detect.
+    """
+    try:
+        # 1) HTTP header
+        hdr = resp.headers.get("Content-Language") or ""
+        lang = _normalize_lang_code(hdr)
+        if lang:
+            return lang
+
+        # 2) HTML-level hints
+        text = resp.text[:20000]  # cap to 20k chars for speed
+        soup = BeautifulSoup(text, "html.parser")
+
+        html_tag = soup.find("html")
+        if html_tag:
+            lang = _normalize_lang_code(
+                html_tag.get("lang") or html_tag.get("xml:lang") or ""
+            )
+            if lang:
+                return lang
+
+        # 3) <meta http-equiv="content-language">
+        meta = soup.find("meta", attrs={"http-equiv": re.compile("^content-language$", re.I)})
+        if meta and meta.get("content"):
+            lang = _normalize_lang_code(meta["content"])
+            if lang:
+                return lang
+
+    except Exception:
+        return ""
+
+    return ""
 
 # ---------- robots ----------
 @lru_cache(maxsize=2048)
@@ -743,7 +804,7 @@ def _norm_name(s: str) -> str:
     return " ".join(parts)
 
 def _escape_overpass_regex(s: str) -> str:
-    return re.sub(r'([.^$*+?{}\$begin:math:display$\\$end:math:display$\\\\|()])', r'\\\1', s)
+    return re.sub(r'([.^$*+?{}\\|()])', r'\\\1', s)
 
 def _haversine_km(lat1, lon1, lat2, lon2) -> float:
     if None in (lat1, lon1, lat2, lon2):
@@ -1252,9 +1313,16 @@ def main():
                     continue
 
                 try:
-                    fetch(website)
+                    resp = fetch(website)
                 except Exception:
                     STATS["skip_fetch"] += 1
+                    continue
+
+                # --- ENGLISH-ONLY FILTER ---
+                lang = detect_page_language(resp)
+                if lang and not lang.startswith("en"):
+                    STATS["skip_lang"] += 1
+                    print(f"[{city}] Skipping non-English site {website} (lang={lang})", flush=True)
                     continue
 
                 leads.append({"Company": biz["business_name"], "Website": website})
