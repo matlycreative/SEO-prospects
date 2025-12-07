@@ -3,7 +3,9 @@
 # Generic local-business lead finder for SEO outreach.
 #
 # What it does:
-#   - Picks cities (CITY_ROTATION)
+#   - Picks cities in mostly English-speaking / English-heavy markets:
+#       US, UK, Canada, Australia, New Zealand, Ireland,
+#       Singapore, UAE (Dubai/Abu Dhabi), Hong Kong.
 #   - Uses Nominatim to geocode city
 #   - Uses Overpass + Nominatim POI search to find local businesses in MANY niches:
 #       * Real estate agencies / property management
@@ -17,7 +19,9 @@
 #       * Home services where tagged (plumber, electrician, roofer, etc.)
 #   - Resolves websites (direct tag, Wikidata, Nominatim, Foursquare)
 #   - Deduplicates by domain, checks robots.txt, checks site is up
-#   - Filters out obviously non-English websites (based on lang/meta headers)
+#   - Tries to keep ONLY "small-ish" sites, skipping very large/complex ones:
+#       * If HTML bigger than MAX_HTML_KB_SMALL_SITE
+#       * Or too many <script> tags
 #   - Writes leads to CSV
 #   - Fills Trello template cards with:
 #       Company, Website
@@ -34,7 +38,7 @@ from typing import Optional, List, Dict, Tuple
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from bs4 import BeautifulSoup  # not strictly needed but kept if you expand later
+from bs4 import BeautifulSoup
 import tldextract
 import urllib.robotparser as robotparser
 from functools import lru_cache
@@ -72,6 +76,11 @@ DAILY_LIMIT      = env_int("DAILY_LIMIT", 5)
 PUSH_INTERVAL_S  = env_int("PUSH_INTERVAL_S", 20)
 REQUEST_DELAY_S  = env_float("REQUEST_DELAY_S", 0.2)
 SEEN_FILE        = os.getenv("SEEN_FILE", "seen_domains.txt")
+
+# "Small site" filtering
+SMALL_SITE_ONLY          = env_on("SMALL_SITE_ONLY", True)
+MAX_HTML_KB_SMALL_SITE   = env_int("MAX_HTML_KB_SMALL_SITE", 600)   # ~600 KB HTML
+MAX_SCRIPTS_SMALL_SITE   = env_int("MAX_SCRIPTS_SMALL_SITE", 40)    # max script tags before we consider it "big"
 
 # Batch rotation for scheduling (e.g. "Monday morning", "Monday afternoon", etc.)
 BATCH_FILE = os.getenv("BATCH_FILE", "batch_state.txt")
@@ -130,12 +139,12 @@ NOMINATIM_POI_QUERIES_PER_CITY  = env_int("NOMINATIM_POI_QUERIES_PER_CITY", 3)
 
 # Nominatim + UA
 NOMINATIM_EMAIL = os.getenv("NOMINATIM_EMAIL", "you@example.com")
-UA              = os.getenv("USER_AGENT", f"SEOLEads/1.0 (+{NOMINATIM_EMAIL})")
+UA              = os.getenv("USER_AGENT", f"SEOLeads/1.0 (+{NOMINATIM_EMAIL})")
 
 # Trello
 TRELLO_KEY      = os.getenv("TRELLO_KEY")
 TRELLO_TOKEN    = os.getenv("TRELLO_TOKEN")
-TRELLO_LIST_ID  = os.getenv("TRELLO_LIST_ID")          # NEW LIST for SEO business
+TRELLO_LIST_ID  = os.getenv("TRELLO_LIST_ID")
 TRELLO_TEMPLATE_CARD_ID = os.getenv("TRELLO_TEMPLATE_CARD_ID")  # optional, if you want cloning
 
 # Discovery (Foursquare v3 = single API Key) — optional
@@ -149,7 +158,7 @@ STATS = {
     "skip_dupe_domain": 0,
     "skip_robots": 0,
     "skip_fetch": 0,
-    "skip_lang": 0,
+    "skip_big_site": 0,
     "website_direct": 0,
     "website_overpass_name": 0,
     "website_nominatim": 0,
@@ -176,7 +185,7 @@ def _sleep():
 
 # ---------- HTTP ----------
 SESS = requests.Session()
-SESS.headers.update({"User-Agent": UA, "Accept-Language": "en;q=0.8,de;q=0.6,fr;q=0.6"})
+SESS.headers.update({"User-Agent": UA, "Accept-Language": "en;q=0.9"})
 
 try:
     _retries = Retry(
@@ -187,6 +196,7 @@ try:
         respect_retry_after_header=True,
     )
 except TypeError:
+    # older urllib3
     _retries = Retry(
         total=3,
         backoff_factor=0.5,
@@ -205,26 +215,60 @@ FORCE_CITY    = (os.getenv("FORCE_CITY") or "").strip()
 CITY_HOPS     = env_int("CITY_HOPS", 8)
 OSM_RADIUS_M  = env_int("OSM_RADIUS_M", 2500)
 
+# NEW: Focus on English-heavy markets only
 CITY_ROTATION = [
-    ("Zurich","Switzerland"), ("Geneva","Switzerland"), ("Basel","Switzerland"), ("Lausanne","Switzerland"),
-    ("London","United Kingdom"), ("Manchester","United Kingdom"), ("Birmingham","United Kingdom"), ("Edinburgh","United Kingdom"),
-    ("New York","United States"), ("Los Angeles","United States"), ("Chicago","United States"),
-    ("Miami","United States"), ("San Francisco","United States"), ("Dallas","United States"),
-    ("Paris","France"), ("Lyon","France"), ("Marseille","France"), ("Toulouse","France"),
-    ("Berlin","Germany"), ("Munich","Germany"), ("Hamburg","Germany"), ("Frankfurt","Germany"),
-    ("Milan","Italy"), ("Rome","Italy"), ("Naples","Italy"), ("Turin","Italy"),
-    ("Oslo","Norway"), ("Bergen","Norway"),
-    ("Copenhagen","Denmark"), ("Aarhus","Denmark"),
-    ("Vienna","Austria"), ("Salzburg","Austria"), ("Graz","Austria"),
-    ("Madrid","Spain"), ("Barcelona","Spain"), ("Valencia","Spain"),
-    ("Lisbon","Portugal"), ("Porto","Portugal"),
-    ("Amsterdam","Netherlands"), ("Rotterdam","Netherlands"), ("The Hague","Netherlands"),
-    ("Brussels","Belgium"), ("Antwerp","Belgium"), ("Ghent","Belgium"),
-    ("Luxembourg City","Luxembourg"),
-    ("Zagreb","Croatia"), ("Split","Croatia"), ("Rijeka","Croatia"),
+    # United States
+    ("New York","United States"),
+    ("Los Angeles","United States"),
+    ("Chicago","United States"),
+    ("Miami","United States"),
+    ("San Francisco","United States"),
+    ("Dallas","United States"),
+    ("Houston","United States"),
+    ("Atlanta","United States"),
+    ("Boston","United States"),
+    ("Seattle","United States"),
+    ("Austin","United States"),
+
+    # United Kingdom
+    ("London","United Kingdom"),
+    ("Manchester","United Kingdom"),
+    ("Birmingham","United Kingdom"),
+    ("Edinburgh","United Kingdom"),
+    ("Glasgow","United Kingdom"),
+
+    # Canada
+    ("Toronto","Canada"),
+    ("Vancouver","Canada"),
+    ("Montreal","Canada"),
+    ("Calgary","Canada"),
+    ("Ottawa","Canada"),
+
+    # Australia
+    ("Sydney","Australia"),
+    ("Melbourne","Australia"),
+    ("Brisbane","Australia"),
+    ("Perth","Australia"),
+    ("Adelaide","Australia"),
+
+    # New Zealand
+    ("Auckland","New Zealand"),
+    ("Wellington","New Zealand"),
+    ("Christchurch","New Zealand"),
+
+    # Ireland
+    ("Dublin","Ireland"),
+    ("Cork","Ireland"),
+
+    # Singapore
+    ("Singapore","Singapore"),
+
+    # UAE (English-heavy, especially Dubai)
     ("Dubai","United Arab Emirates"),
-    ("Jakarta","Indonesia"), ("Surabaya","Indonesia"), ("Bandung","Indonesia"), ("Denpasar","Indonesia"),
-    ("Toronto","Canada"), ("Vancouver","Canada"), ("Montreal","Canada"), ("Calgary","Canada"), ("Ottawa","Canada"),
+    ("Abu Dhabi","United Arab Emirates"),
+
+    # Hong Kong
+    ("Hong Kong","China"),
 ]
 
 def iter_cities():
@@ -256,6 +300,7 @@ def normalize_url(u):
     if u.lower().startswith("mailto:"):
         return None
     if "@" in u and "://" not in u:
+        # plain email typed as "a@b.com"
         if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", u):
             return None
     p = urlparse(u)
@@ -284,65 +329,6 @@ def fetch(url):
     r.raise_for_status()
     return r
 
-# ---------- simple language detection helpers (for English-only filter) ----------
-
-def _normalize_lang_code(val: str) -> str:
-    """
-    Normalize language code like:
-      'en-US,en;q=0.9' -> 'en-us'
-      'fr-CH'          -> 'fr-ch'
-    Returns empty string if nothing usable.
-    """
-    if not val:
-        return ""
-    v = val.strip()
-    if not v:
-        return ""
-    v = v.split(",")[0].strip()  # take first entry
-    v = v.replace("_", "-").lower()
-    return v
-
-def detect_page_language(resp) -> str:
-    """
-    Best-effort detection of page language using:
-      - Content-Language header
-      - <html lang="...">
-      - <meta http-equiv="content-language" ...>
-
-    Returns normalized language code like 'en', 'en-gb', 'fr', etc.,
-    or "" if we can't detect.
-    """
-    try:
-        # 1) HTTP header
-        hdr = resp.headers.get("Content-Language") or ""
-        lang = _normalize_lang_code(hdr)
-        if lang:
-            return lang
-
-        # 2) HTML-level hints
-        text = resp.text[:20000]  # cap to 20k chars for speed
-        soup = BeautifulSoup(text, "html.parser")
-
-        html_tag = soup.find("html")
-        if html_tag:
-            lang = _normalize_lang_code(
-                html_tag.get("lang") or html_tag.get("xml:lang") or ""
-            )
-            if lang:
-                return lang
-
-        # 3) <meta http-equiv="content-language">
-        meta = soup.find("meta", attrs={"http-equiv": re.compile("^content-language$", re.I)})
-        if meta and meta.get("content"):
-            lang = _normalize_lang_code(meta["content"])
-            if lang:
-                return lang
-
-    except Exception:
-        return ""
-
-    return ""
-
 # ---------- robots ----------
 @lru_cache(maxsize=2048)
 def _robots_parser_for_base(base: str) -> robotparser.RobotFileParser:
@@ -350,12 +336,12 @@ def _robots_parser_for_base(base: str) -> robotparser.RobotFileParser:
     try:
         resp = SESS.get(urljoin(base, "/robots.txt"), timeout=10)
         if resp.status_code != 200:
-            rp.parse([])
+            rp.parse([])  # allow all
             return rp
         rp.parse(resp.text.splitlines())
         return rp
     except Exception:
-        rp.parse([])
+        rp.parse([])  # allow all
         return rp
 
 def allowed_by_robots(base_url: str, path: str = "/") -> bool:
@@ -369,6 +355,33 @@ def allowed_by_robots(base_url: str, path: str = "/") -> bool:
         return rp.can_fetch(UA, urljoin(base, path0))
     except Exception:
         return True
+
+# ---------- "small site" heuristic ----------
+def is_probably_small_site(html_text: str, url: str) -> bool:
+    """
+    SUPER SIMPLE heuristic to skip obviously "big" / complex sites:
+      - if HTML > MAX_HTML_KB_SMALL_SITE
+      - or too many <script> tags
+    This is not perfect, but it heavily biases toward local/smaller sites.
+    """
+    if not SMALL_SITE_ONLY:
+        return True
+
+    if not html_text:
+        return True
+
+    size_bytes = len(html_text.encode("utf-8", errors="ignore"))
+    if size_bytes > MAX_HTML_KB_SMALL_SITE * 1024:
+        dbg(f"[big-site] {url} skipped: HTML {size_bytes/1024:.1f} KB")
+        return False
+
+    lower = html_text.lower()
+    script_count = lower.count("<script")
+    if script_count > MAX_SCRIPTS_SMALL_SITE:
+        dbg(f"[big-site] {url} skipped: {script_count} <script> tags")
+        return False
+
+    return True
 
 # ---------- geo ----------
 def geocode_city(city, country) -> Tuple[float,float,float,float]:
@@ -390,7 +403,7 @@ def geocode_city(city, country) -> Tuple[float,float,float,float]:
 
 # MULTI-NICHE FILTERS:
 OSM_FILTERS = [
-    # Real estate (still good SEO clients, but not the only niche anymore)
+    # Real estate
     ("office", "estate_agent"),
     ("office", "real_estate"),
     ("office", "property_management"),
@@ -470,6 +483,7 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
         for t in ("node", "way", "relation"):
             parts.append(f'{t}(around:{radius_m},{lat},{lon})["{k}"="{v}"];')
     q = f"""[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];({ ' '.join(parts) });out tags center;"""
+
     js = _overpass_post(q)
     if not js:
         return []
@@ -509,6 +523,7 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
     return out
 
 def _viewbox_param(south: float, west: float, north: float, east: float) -> str:
+    # Nominatim expects: left,top,right,bottom
     return f"{west},{north},{east},{south}"
 
 def _guess_name_from_nominatim(item: dict) -> str:
@@ -524,12 +539,12 @@ def _guess_name_from_nominatim(item: dict) -> str:
 def _nominatim_poi_queries_for(country: str) -> List[str]:
     """
     Multi-niche keyword list for Nominatim POI search.
-    Adjusted per country when possible.
+    Adjusted per country when possible, but we mostly use English terms
+    because we're focusing on English-heavy markets anyway.
     """
     c = (country or "").lower().strip()
 
     base = [
-        # English generic
         "real estate agency",
         "property management",
         "law firm",
@@ -557,149 +572,8 @@ def _nominatim_poi_queries_for(country: str) -> List[str]:
         "electrician",
     ]
 
-    if c in ("france", "belgium", "switzerland"):
-        base += [
-            "agence immobilière",
-            "gestion immobilière",
-            "cabinet d'avocats",
-            "avocat",
-            "dentiste",
-            "clinique dentaire",
-            "médecin",
-            "cabinet médical",
-            "expert comptable",
-            "cabinet comptable",
-            "agence de marketing",
-            "salle de sport",
-            "centre de fitness",
-            "salon de coiffure",
-            "salon de beauté",
-            "garage automobile",
-            "réparation automobile",
-            "plombier",
-            "électricien",
-        ]
-    elif c in ("germany", "austria"):
-        base += [
-            "immobilienmakler",
-            "immobilien",
-            "rechtsanwalt",
-            "kanzlei",
-            "zahnarzt",
-            "arztpraxis",
-            "arzt",
-            "steuerberater",
-            "buchhaltung",
-            "marketingagentur",
-            "werbeagentur",
-            "fitnessstudio",
-            "friseur",
-            "kosmetikstudio",
-            "autowerkstatt",
-            "kfz werkstatt",
-            "installateur",
-            "elektriker",
-        ]
-    elif c in ("italy",):
-        base += [
-            "agenzia immobiliare",
-            "studio legale",
-            "avvocato",
-            "dentista",
-            "studio dentistico",
-            "studio medico",
-            "commercialista",
-            "studio commercialista",
-            "agenzia di marketing",
-            "palestra",
-            "salone di bellezza",
-            "parrucchiere",
-            "officina",
-            "meccanico",
-            "idraulico",
-            "elettricista",
-        ]
-    elif c in ("spain",):
-        base += [
-            "inmobiliaria",
-            "agencia inmobiliaria",
-            "abogado",
-            "bufete de abogados",
-            "dentista",
-            "clinica dental",
-            "medico",
-            "clinica medica",
-            "asesoria fiscal",
-            "asesoria contable",
-            "agencia de marketing",
-            "gimnasio",
-            "centro de fitness",
-            "peluqueria",
-            "salon de belleza",
-            "taller mecanico",
-            "reparacion de coches",
-            "fontanero",
-            "electricista",
-        ]
-    elif c in ("portugal",):
-        base += [
-            "imobiliaria",
-            "advogado",
-            "escritorio de advogados",
-            "dentista",
-            "clinica dentaria",
-            "clinica medica",
-            "contabilista",
-            "escritorio de contabilidade",
-            "agencia de marketing",
-            "ginasio",
-            "cabeleireiro",
-            "salão de beleza",
-            "oficina automovel",
-            "mecanico",
-            "canalizador",
-            "eletricista",
-        ]
-    elif c in ("netherlands",):
-        base += [
-            "makelaar",
-            "vastgoed",
-            "advocatenkantoor",
-            "advocaat",
-            "tandarts",
-            "huisarts",
-            "boekhouder",
-            "accountantskantoor",
-            "marketingbureau",
-            "sportschool",
-            "kapper",
-            "schoonheidssalon",
-            "autogarage",
-            "loodgieter",
-            "elektricien",
-        ]
-    elif c in ("denmark", "norway", "sweden"):
-        base += [
-            "eiendomsmegler",
-            "ejendomsmægler",
-            "advokat",
-            "tannlege",
-            "tandlæge",
-            "legekontor",
-            "lægehus",
-            "revisor",
-            "regnskab",
-            "markedsføringsbureau",
-            "treningssenter",
-            "fitnesscenter",
-            "frisør",
-            "skønhedssalon",
-            "bilværksted",
-            "mekaniker",
-            "vvs",
-            "elektriker",
-        ]
-
+    # You *could* add local-language variants here, but since we're focusing on
+    # English-heavy markets, the English queries are often enough.
     return base
 
 def nominatim_poi_candidates(city: str, country: str, south: float, west: float, north: float, east: float) -> List[dict]:
@@ -804,7 +678,7 @@ def _norm_name(s: str) -> str:
     return " ".join(parts)
 
 def _escape_overpass_regex(s: str) -> str:
-    return re.sub(r'([.^$*+?{}\\|()])', r'\\\1', s)
+    return re.sub(r'([.^$*+?{}$begin:math:display$$end:math:display$\\|()])', r'\\\1', s)
 
 def _haversine_km(lat1, lon1, lat2, lon2) -> float:
     if None in (lat1, lon1, lat2, lon2):
@@ -1318,11 +1192,15 @@ def main():
                     STATS["skip_fetch"] += 1
                     continue
 
-                # --- ENGLISH-ONLY FILTER ---
-                lang = detect_page_language(resp)
-                if lang and not lang.startswith("en"):
-                    STATS["skip_lang"] += 1
-                    print(f"[{city}] Skipping non-English site {website} (lang={lang})", flush=True)
+                html_text = ""
+                try:
+                    resp.encoding = resp.encoding or "utf-8"
+                    html_text = resp.text
+                except Exception:
+                    html_text = resp.content.decode("utf-8", errors="ignore")
+
+                if not is_probably_small_site(html_text, website):
+                    STATS["skip_big_site"] += 1
                     continue
 
                 leads.append({"Company": biz["business_name"], "Website": website})
