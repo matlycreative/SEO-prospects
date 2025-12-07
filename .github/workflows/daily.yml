@@ -1,1 +1,117 @@
+name: SEO Leads to Trello
 
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 2-5" # Tue–Sat
+    - cron: "0 3 * * 0"   # Sun
+    # (adjust times as you like; this is separate from the real estate workflow)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-seo-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      DEBUG: "1"
+
+      # Required secrets (SEO business)
+      TRELLO_KEY: ${{ secrets.TRELLO_KEY }}
+      TRELLO_TOKEN: ${{ secrets.TRELLO_TOKEN }}
+
+      # IMPORTANT: use a DIFFERENT secret for the SEO board/list
+      # Create a repo secret called SEO_TRELLO_LIST_ID with the ID of your SEO list,
+      # and we map it into TRELLO_LIST_ID (what the script expects).
+      TRELLO_LIST_ID: ${{ secrets.SEO_TRELLO_LIST_ID }}
+
+      NOMINATIM_EMAIL: ${{ secrets.NOMINATIM_EMAIL }}
+
+      # Optional discovery (only if you set this secret)
+      FOURSQUARE_API_KEY: ${{ secrets.FOURSQUARE_API_KEY }}
+
+      # Tuning
+      DAILY_LIMIT: "45"
+      PUSH_INTERVAL_S: "20"
+      REQUEST_DELAY_S: "0.2"
+      CITY_HOPS: "14"
+      OSM_RADIUS_M: "15000"
+      BUTLER_GRACE_S: "15"
+
+      # Optional geo targeting:
+      # COUNTRY_WHITELIST: "Switzerland,Germany,France"
+      # FORCE_COUNTRY: ""
+      # FORCE_CITY: ""
+
+      # Persist (SEO-specific seen file so it doesn't clash with real estate one)
+      SEEN_FILE: .data/seo_seen_domains.txt
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare data dir
+        run: mkdir -p .data
+
+      - name: Prepare tldextract cache dir
+        run: mkdir -p ~/.cache/tldextract
+
+      - name: Jitter start (scheduled runs only)
+        if: ${{ github.event_name == 'schedule' }}
+        run: sleep $((RANDOM % 60 + 5))
+
+      - name: Preflight
+        run: |
+          python - <<'PY'
+          import os, sys, re
+          need = ["TRELLO_KEY","TRELLO_TOKEN","TRELLO_LIST_ID"]
+          miss = [k for k in need if not os.getenv(k)]
+          if miss:
+              print("Missing required secrets:", ", ".join(miss)); sys.exit(1)
+          em = os.getenv("NOMINATIM_EMAIL","")
+          if not em or "example.com" in em or not re.search(r".+@.+\..+", em):
+              print("NOMINATIM_EMAIL is missing or not a real email; set it to comply with Nominatim policy.")
+              sys.exit(1)
+          PY
+
+      - name: Run SEO pipeline
+        run: |
+          set -euo pipefail
+          python seo_leads_to_trello.py || (echo "retrying in 15s..." && sleep 15 && python seo_leads_to_trello.py)
+
+      - name: Commit SEO seen_domains.txt if changed
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A .data/seo_seen_domains.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update .data/seo_seen_domains.txt [skip ci]"
+          git pull --rebase --autostash
+          git push
