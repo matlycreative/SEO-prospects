@@ -38,7 +38,7 @@ jobs:
       FOURSQUARE_API_KEY: ${{ secrets.FOURSQUARE_API_KEY }}
 
       # Tuning
-      DAILY_LIMIT: "45"
+      DAILY_LIMIT: "5"
       PUSH_INTERVAL_S: "20"
       REQUEST_DELAY_S: "0.2"
       CITY_HOPS: "14"
