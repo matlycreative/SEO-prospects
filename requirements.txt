@@ -1,0 +1,8 @@
+requests
+beautifulsoup4
+tldextract
+dnspython
+python-whois
+python-dotenv
+gspread
+google-auth
