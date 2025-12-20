@@ -1,34 +1,15 @@
 # seo_leads_to_trello.py
 #
-# Generic local-business lead finder for SEO outreach.
+# Generic local-business lead finder for SEO outreach + email finding.
 #
-# What it does:
-#   - Picks cities in mostly English-speaking / English-heavy markets:
-#       US, UK, Canada, Australia, New Zealand, Ireland,
-#       Singapore, UAE (Dubai/Abu Dhabi), Hong Kong.
-#   - Uses Nominatim to geocode city
-#   - Uses Overpass + Nominatim POI search to find local businesses in MANY niches:
-#       * Real estate agencies / property management
-#       * Law firms / lawyers
-#       * Dentists / medical clinics
-#       * Accountants / tax advisors / financial advisors
-#       * Marketing / web / advertising agencies
-#       * Gyms / fitness studios
-#       * Beauty salons / hairdressers / spas
-#       * Car repair / garages / vehicle services
-#       * Home services where tagged (plumber, electrician, roofer, etc.)
-#   - Resolves websites (direct tag, Wikidata, Nominatim, Foursquare)
-#   - Deduplicates by domain, checks robots.txt, checks site is up
-#   - Tries to keep ONLY "small-ish" sites, skipping very large/complex ones:
-#       * If HTML bigger than MAX_HTML_KB_SMALL_SITE
-#       * Or too many <script> tags
-#   - Writes leads to CSV
-#   - Fills Trello template cards with:
-#       Company, Website
-#     preserving existing:
-#       First, Email, Hook, Variant
-#
-# No emails are scraped. No contact pages, nothing aggressive; just business name + website.
+# What it does (extra vs before):
+#   - Same city / OSM discovery as before.
+#   - Still only stores business + website in CSV.
+#   - NEW: uses Kitt (https://api.trykitt.ai) to find a contact email
+#          for each website (if KITT_API_KEY is set).
+#   - Optional: verify the email via Kitt /job/verify_email
+#              (if KITT_ENABLE_VERIFY=1).
+#   - Writes the found email into the Trello card "Email:" field.
 
 import os, re, json, time, random, csv, pathlib, math
 from datetime import date, datetime
@@ -127,7 +108,7 @@ OVERPASS_ENABLED        = env_on("OVERPASS_ENABLED", 1)
 NOMINATIM_POI_ENABLED   = env_on("NOMINATIM_POI_ENABLED", 1)
 OVERPASS_NAME_LOOKUP_ENABLED = env_on("OVERPASS_NAME_LOOKUP_ENABLED", 0)
 
-# Overpass tuning (GH Actions often times out)
+# Overpass tuning
 OVERPASS_TIMEOUT_S      = env_int("OVERPASS_TIMEOUT_S", 45)
 OVERPASS_QUERY_TIMEOUT  = env_int("OVERPASS_QUERY_TIMEOUT", 25)
 OVERPASS_RETRIES        = env_int("OVERPASS_RETRIES", 2)
@@ -150,6 +131,12 @@ TRELLO_TEMPLATE_CARD_ID = os.getenv("TRELLO_TEMPLATE_CARD_ID")  # optional, if y
 # Discovery (Foursquare v3 = single API Key) — optional
 FOURSQUARE_API_KEY = os.getenv("FOURSQUARE_API_KEY")
 
+# Kitt email-finder API
+KITT_API_KEY            = (os.getenv("KITT_API_KEY") or "").strip()
+KITT_ENABLE             = env_on("KITT_ENABLE", True) and bool(KITT_API_KEY)
+KITT_ENABLE_VERIFY      = env_on("KITT_ENABLE_VERIFY", False)
+KITT_TIMEOUT_S          = env_int("KITT_TIMEOUT_S", 45)
+
 STATS = {
     "osm_candidates": 0,
     "cand_overpass": 0,
@@ -164,6 +151,10 @@ STATS = {
     "website_nominatim": 0,
     "website_fsq": 0,
     "website_wikidata": 0,
+    "kitt_find_attempts": 0,
+    "kitt_find_success": 0,
+    "kitt_verify_attempts": 0,
+    "kitt_verify_valid": 0,
 }
 
 def dbg(msg):
@@ -215,7 +206,7 @@ FORCE_CITY    = (os.getenv("FORCE_CITY") or "").strip()
 CITY_HOPS     = env_int("CITY_HOPS", 8)
 OSM_RADIUS_M  = env_int("OSM_RADIUS_M", 2500)
 
-# NEW: Focus on English-heavy markets only
+# Focus on English-heavy markets only
 CITY_ROTATION = [
     # United States
     ("New York","United States"),
@@ -263,7 +254,7 @@ CITY_ROTATION = [
     # Singapore
     ("Singapore","Singapore"),
 
-    # UAE (English-heavy, especially Dubai)
+    # UAE
     ("Dubai","United Arab Emirates"),
     ("Abu Dhabi","United Arab Emirates"),
 
@@ -300,7 +291,6 @@ def normalize_url(u):
     if u.lower().startswith("mailto:"):
         return None
     if "@" in u and "://" not in u:
-        # plain email typed as "a@b.com"
         if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", u):
             return None
     p = urlparse(u)
@@ -358,29 +348,19 @@ def allowed_by_robots(base_url: str, path: str = "/") -> bool:
 
 # ---------- "small site" heuristic ----------
 def is_probably_small_site(html_text: str, url: str) -> bool:
-    """
-    SUPER SIMPLE heuristic to skip obviously "big" / complex sites:
-      - if HTML > MAX_HTML_KB_SMALL_SITE
-      - or too many <script> tags
-    This is not perfect, but it heavily biases toward local/smaller sites.
-    """
     if not SMALL_SITE_ONLY:
         return True
-
     if not html_text:
         return True
-
     size_bytes = len(html_text.encode("utf-8", errors="ignore"))
     if size_bytes > MAX_HTML_KB_SMALL_SITE * 1024:
         dbg(f"[big-site] {url} skipped: HTML {size_bytes/1024:.1f} KB")
         return False
-
     lower = html_text.lower()
     script_count = lower.count("<script")
     if script_count > MAX_SCRIPTS_SMALL_SITE:
         dbg(f"[big-site] {url} skipped: {script_count} <script> tags")
         return False
-
     return True
 
 # ---------- geo ----------
@@ -401,7 +381,6 @@ def geocode_city(city, country) -> Tuple[float,float,float,float]:
 
 # ---------- OSM candidates (Overpass + Nominatim POI fallback) ----------
 
-# MULTI-NICHE FILTERS:
 OSM_FILTERS = [
     # Real estate
     ("office", "estate_agent"),
@@ -448,7 +427,7 @@ OSM_FILTERS = [
     ("amenity", "car_wash"),
     ("amenity", "vehicle_inspection"),
 
-    # Home services (where explicitly tagged as crafts)
+    # Home services (crafts)
     ("craft", "plumber"),
     ("craft", "electrician"),
     ("craft", "hvac"),
@@ -483,11 +462,9 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
         for t in ("node", "way", "relation"):
             parts.append(f'{t}(around:{radius_m},{lat},{lon})["{k}"="{v}"];')
     q = f"""[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];({ ' '.join(parts) });out tags center;"""
-
     js = _overpass_post(q)
     if not js:
         return []
-
     rows = []
     for el in js.get("elements", []):
         tags = el.get("tags", {}) or {}
@@ -496,13 +473,11 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
             continue
         website = tags.get("website") or tags.get("contact:website") or tags.get("url")
         wikidata = tags.get("wikidata")
-
         lat2 = el.get("lat")
         lon2 = el.get("lon")
         if (lat2 is None or lon2 is None) and isinstance(el.get("center"), dict):
             lat2 = el["center"].get("lat")
             lon2 = el["center"].get("lon")
-
         rows.append({
             "business_name": name,
             "website": normalize_url(website) if website else None,
@@ -510,20 +485,17 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
             "lat": lat2,
             "lon": lon2,
         })
-
     dedup = {}
     for r0 in rows:
         key = (r0["business_name"].lower(), etld1_from_url(r0["website"] or ""))
         if key not in dedup:
             dedup[key] = r0
-
     out = list(dedup.values())
     random.shuffle(out)
     STATS["cand_overpass"] += len(out)
     return out
 
 def _viewbox_param(south: float, west: float, north: float, east: float) -> str:
-    # Nominatim expects: left,top,right,bottom
     return f"{west},{north},{east},{south}"
 
 def _guess_name_from_nominatim(item: dict) -> str:
@@ -537,13 +509,6 @@ def _guess_name_from_nominatim(item: dict) -> str:
     return dn
 
 def _nominatim_poi_queries_for(country: str) -> List[str]:
-    """
-    Multi-niche keyword list for Nominatim POI search.
-    Adjusted per country when possible, but we mostly use English terms
-    because we're focusing on English-heavy markets anyway.
-    """
-    c = (country or "").lower().strip()
-
     base = [
         "real estate agency",
         "property management",
@@ -571,9 +536,6 @@ def _nominatim_poi_queries_for(country: str) -> List[str]:
         "plumber",
         "electrician",
     ]
-
-    # You *could* add local-language variants here, but since we're focusing on
-    # English-heavy markets, the English queries are often enough.
     return base
 
 def nominatim_poi_candidates(city: str, country: str, south: float, west: float, north: float, east: float) -> List[dict]:
@@ -583,10 +545,8 @@ def nominatim_poi_candidates(city: str, country: str, south: float, west: float,
     queries = _nominatim_poi_queries_for(country)
     random.shuffle(queries)
     queries = queries[:max(1, NOMINATIM_POI_QUERIES_PER_CITY)]
-
     out: List[dict] = []
     seen_key = set()
-
     for qstr in queries:
         try:
             throttle("nominatim_poi", 1.1)
@@ -611,35 +571,28 @@ def nominatim_poi_candidates(city: str, country: str, south: float, west: float,
         except Exception as e:
             dbg(f"[nominatim_poi] error: {e}")
             continue
-
         for it in items:
             nm = _guess_name_from_nominatim(it).strip()
             if not nm:
                 continue
-
             klass = (it.get("class") or "").lower()
             typ   = (it.get("type") or "").lower()
-
             if klass and klass not in ("office", "shop", "amenity", "tourism", "leisure", "craft"):
                 continue
             if typ in ("house", "residential", "road", "yes", "city", "town", "village", "suburb", "neighbourhood"):
                 continue
-
             xt = it.get("extratags") or {}
             website = xt.get("website") or xt.get("contact:website") or xt.get("url")
-
             try:
                 lat2 = float(it.get("lat")) if it.get("lat") is not None else None
                 lon2 = float(it.get("lon")) if it.get("lon") is not None else None
             except Exception:
                 lat2, lon2 = None, None
-
             website = normalize_url(website) if website else None
             key = (nm.lower(), etld1_from_url(website or "") or f"{lat2},{lon2}")
             if key in seen_key:
                 continue
             seen_key.add(key)
-
             out.append({
                 "business_name": nm,
                 "website": website,
@@ -647,7 +600,6 @@ def nominatim_poi_candidates(city: str, country: str, south: float, west: float,
                 "lat": lat2,
                 "lon": lon2,
             })
-
     random.shuffle(out)
     STATS["cand_nominatim_poi"] += len(out)
     return out
@@ -673,12 +625,12 @@ LEGAL_SUFFIXES = [
 
 def _norm_name(s: str) -> str:
     s = (s or "").strip().lower()
-    s = re.sub(r"[\u2019'`\".,:;()\\-_/\\\\]+", " ", s)
+    s = re.sub(r"[\u2019'`\".,:;()\-_/\\]+", " ", s)
     parts = [p for p in s.split() if p and p not in LEGAL_SUFFIXES]
     return " ".join(parts)
 
 def _escape_overpass_regex(s: str) -> str:
-    return re.sub(r'([.^$*+?{}$begin:math:display$$end:math:display$\\|()])', r'\\\1', s)
+    return re.sub(r'([.^$*+?{}\\|()])', r'\\\1', s)
 
 def _haversine_km(lat1, lon1, lat2, lon2) -> float:
     if None in (lat1, lon1, lat2, lon2):
@@ -698,11 +650,9 @@ def overpass_lookup_website_by_name(name: str, lat: float, lon: float, radius_m:
     n = _norm_name(name)
     if not n:
         return None
-
     tokens = [t for t in n.split() if len(t) >= 3] or n.split()
     tokens = tokens[:5]
     pattern = ".*".join(_escape_overpass_regex(t) for t in tokens)
-
     q = f"""
 [out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];
 (
@@ -715,26 +665,21 @@ out tags center;
     js = _overpass_post(q)
     if not js:
         return None
-
     best = None
     best_score = -1e9
-
     for el in js.get("elements", []):
         tags = el.get("tags", {}) or {}
         nm = (tags.get("name") or "").strip()
         w  = tags.get("website") or tags.get("contact:website") or tags.get("url")
         if not w:
             continue
-
         lat2 = el.get("lat")
         lon2 = el.get("lon")
         if (lat2 is None or lon2 is None) and isinstance(el.get("center"), dict):
             lat2 = el["center"].get("lat")
             lon2 = el["center"].get("lon")
-
         dist = _haversine_km(lat, lon, lat2, lon2)
         nm_norm = _norm_name(nm)
-
         score = 0.0
         if nm_norm == n:
             score += 50
@@ -743,18 +688,14 @@ out tags center;
         else:
             overlap = len(set(n.split()) & set(nm_norm.split()))
             score += overlap * 6
-
         score += max(0.0, 20.0 - dist)
-
         w0 = normalize_url(w)
         dom = etld1_from_url(w0 or "")
         if dom:
             score += 5
-
         if score > best_score:
             best_score = score
             best = w
-
     return normalize_url(best) if best else None
 
 def nominatim_lookup_website(name: str, city: str, country: str, limit: int = 8) -> Optional[str]:
@@ -838,28 +779,162 @@ def resolve_website(biz_name: str, city: str, country: str, lat: float, lon: flo
     if w:
         STATS["website_direct"] += 1
         return w
-
     w = wikidata_website_from_qid(wikidata_qid or "")
     if w:
         STATS["website_wikidata"] += 1
         return w
-
     w = nominatim_lookup_website(biz_name, city, country, limit=8)
     if w:
         STATS["website_nominatim"] += 1
         return w
-
     w = overpass_lookup_website_by_name(biz_name, lat, lon, radius_m=20000)
     if w:
         STATS["website_overpass_name"] += 1
         return w
-
     w = normalize_url(fsq_find_website(biz_name, lat, lon))
     if w:
         STATS["website_fsq"] += 1
         return w
-
     return None
+
+# ---------- Kitt email finder helpers ----------
+
+EMAIL_REGEX = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+def _extract_first_email_from_obj(obj) -> Optional[str]:
+    """Recursively search JSON for the first thing that looks like an email."""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            e = _extract_first_email_from_obj(v)
+            if e:
+                return e
+    elif isinstance(obj, list):
+        for v in obj:
+            e = _extract_first_email_from_obj(v)
+            if e:
+                return e
+    elif isinstance(obj, str):
+        m = EMAIL_REGEX.search(obj)
+        if m:
+            return m.group(0).strip()
+    return None
+
+def kitt_find_email_for_business(business_name: str, website: str) -> Optional[str]:
+    """Call Kitt /job/find_email to try to find a contact email for this company."""
+    if not (KITT_ENABLE and website):
+        return None
+    full_name = (business_name or "").strip() or "Owner"
+    payload = {
+        "fullName": full_name,
+        "website": website,
+        "realtime": True,
+        "strictNameMatches": False,
+    }
+    headers = {"x-api-key": KITT_API_KEY}
+    try:
+        throttle("kitt_find", 1.0)
+        r = SESS.post(
+            "https://api.trykitt.ai/job/find_email",
+            headers=headers,
+            json=payload,
+            timeout=KITT_TIMEOUT_S,
+        )
+        STATS["kitt_find_attempts"] += 1
+        if r.status_code != 200:
+            dbg(f"[kitt] find_email HTTP {r.status_code} for {website}")
+            return None
+        try:
+            data = r.json()
+        except Exception:
+            dbg("[kitt] find_email non-JSON response")
+            return None
+        email = _extract_first_email_from_obj(data)
+        if email:
+            STATS["kitt_find_success"] += 1
+        return email
+    except Exception as e:
+        dbg(f"[kitt] find_email error: {e}")
+        return None
+
+def kitt_verify_email(email: str) -> Optional[bool]:
+    """Best-effort verification via Kitt /job/verify_email. Returns True/False/None."""
+    if not (KITT_ENABLE and KITT_ENABLE_VERIFY and email):
+        return None
+    payload = {
+        "email": email,
+        "realtime": True,
+        "treatAliasesAsValid": True,
+    }
+    headers = {"x-api-key": KITT_API_KEY}
+    try:
+        throttle("kitt_verify", 1.0)
+        r = SESS.post(
+            "https://api.trykitt.ai/job/verify_email",
+            headers=headers,
+            json=payload,
+            timeout=KITT_TIMEOUT_S,
+        )
+        STATS["kitt_verify_attempts"] += 1
+        if r.status_code != 200:
+            dbg(f"[kitt] verify_email HTTP {r.status_code} for {email}")
+            return None
+        try:
+            data = r.json()
+        except Exception:
+            # If server says 200 but no JSON/fields, treat as "unknown"
+            return None
+        blob = json.dumps(data).lower()
+        if "undeliverable" in blob or '"valid":false' in blob or '"deliverable":false' in blob:
+            return False
+        if "deliverable" in blob or '"valid":true' in blob or '"deliverable":true' in blob:
+            STATS["kitt_verify_valid"] += 1
+            return True
+        return None
+    except Exception as e:
+        dbg(f"[kitt] verify_email error: {e}")
+        return None
+
+def extract_email_from_html(html_text: str, site_domain: str) -> Optional[str]:
+    """Fallback: extract a same-domain contact email from the website HTML."""
+    if not html_text or not site_domain:
+        return None
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+    except Exception:
+        return None
+    emails = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.lower().startswith("mailto:"):
+            addr = href.split(":", 1)[1].split("?", 1)[0].strip()
+            m = EMAIL_REGEX.search(addr)
+            if m:
+                emails.add(m.group(0).lower())
+    # restrict to same-domain emails if possible
+    same_domain = []
+    for e in emails:
+        parts = e.split("@", 1)
+        if len(parts) != 2:
+            continue
+        dom = parts[1].lower()
+        if dom.endswith(site_domain.lower()):
+            same_domain.append(e)
+    candidates = same_domain or list(emails)
+    if not candidates:
+        return None
+    preferred_prefix_order = [
+        "owner", "ceo", "founder", "marketing", "sales",
+        "info", "contact", "hello", "office", "team",
+        "booking", "appointments", "reception",
+    ]
+    def score(email: str) -> int:
+        local = email.split("@", 1)[0].lower()
+        for idx, pref in enumerate(preferred_prefix_order):
+            if local.startswith(pref):
+                return len(preferred_prefix_order) - idx
+        return 0
+    candidates.sort(key=score, reverse=True)
+    return candidates[0]
 
 # ---------- Trello helpers ----------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
@@ -903,11 +978,9 @@ def _split_header_rest(desc: str):
         i += 1
     if i >= len(lines) or not any(LABEL_RE[lab].match(lines[i]) for lab in TARGET_LABELS):
         return [], lines
-
     header = []
     seen_labels = set()
     started = False
-
     while i < len(lines):
         line = lines[i]
         m_lab = None
@@ -928,29 +1001,24 @@ def _split_header_rest(desc: str):
                     i += 1
             i += 1
             continue
-
         if line.strip() == "":
             header.append(line)
             i += 1
             if "Website" in seen_labels:
                 break
             continue
-
         if started:
             break
-
         i += 1
-
     rest = lines[i:]
     return header, rest
 
-def normalize_header_block(desc: str, company: str, website: str, batch: Optional[str] = None) -> str:
-    desc = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    header_lines, rest_lines = _split_header_rest(desc)
-
-    # preserve existing values (including Email)
+def normalize_header_block(desc: str, company: str, website: str, email: Optional[str] = None,
+                           batch: Optional[str] = None) -> str:
+    d = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
+    header_lines, rest_lines = _split_header_rest(d)
+    # preserve existing values (including Email) unless we got a new email
     preserved = {"First": "", "Email": "", "Hook": "", "Variant": ""}
-
     i = 0
     while i < len(header_lines):
         line = header_lines[i]
@@ -968,10 +1036,10 @@ def normalize_header_block(desc: str, company: str, website: str, batch: Optiona
                 preserved[lab] = val
             break
         i += 1
-
+    if email:
+        preserved["Email"] = email
     def hard(line: str) -> str:
         return (line or "").rstrip() + "  "
-
     new_header = [
         hard(f"Company: {company or ''}"),
         hard(f"First: {preserved['First']}"),
@@ -981,37 +1049,31 @@ def normalize_header_block(desc: str, company: str, website: str, batch: Optiona
         hard(f"Website: {website or ''}"),
         "",
     ]
-
     if batch:
         has_batch = any((line or "").strip() == batch for line in rest_lines)
         if not has_batch:
             if rest_lines and rest_lines[-1].strip() != "":
                 rest_lines.append("")
             rest_lines.append(batch)
-
     out = ("\n".join(new_header + rest_lines)).rstrip("\n") + "\n\n@lead\n"
     return out
 
 def update_card_header(card_id: str, company: str, website: str,
+                       email: Optional[str] = None,
                        new_name: Optional[str] = None,
                        batch: Optional[str] = None) -> bool:
     cur = trello_get_card(card_id)
     desc_old = cur["desc"]
     name_old = cur["name"]
-
-    desc_new = normalize_header_block(desc_old, company, website, batch=batch)
-
+    desc_new = normalize_header_block(desc_old, company, website, email=email, batch=batch)
     payload = {}
     if desc_new != desc_old:
         payload["desc"] = desc_new
-
     desired_name = (new_name or "").strip()
     if desired_name and desired_name != name_old.strip():
         payload["name"] = desired_name
-
     if not payload:
         return False
-
     r = SESS.put(
         f"https://api.trello.com/1/cards/{card_id}",
         params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
@@ -1203,7 +1265,21 @@ def main():
                     STATS["skip_big_site"] += 1
                     continue
 
-                leads.append({"Company": biz["business_name"], "Website": website})
+                # --- email discovery via Kitt (+fallback) ---
+                email = None
+                if KITT_ENABLE:
+                    email = kitt_find_email_for_business(biz["business_name"], website)
+                    if email and KITT_ENABLE_VERIFY:
+                        valid = kitt_verify_email(email)
+                        if valid is False:
+                            dbg(f"[kitt] dropping email marked invalid: {email}")
+                            email = None
+
+                if not email:
+                    # very light fallback: try to grab a same-domain contact email from HTML
+                    email = extract_email_from_html(html_text, site_dom)
+
+                leads.append({"Company": biz["business_name"], "Website": website, "Email": email or ""})
 
                 if site_dom:
                     seen_domain_write(site_dom)
@@ -1227,7 +1303,7 @@ def main():
     if PRECLONE and need > 0 and TRELLO_TEMPLATE_CARD_ID:
         ensure_min_blank_templates(TRELLO_LIST_ID, TRELLO_TEMPLATE_CARD_ID, need)
 
-    # Save CSV
+    # Save CSV (still only company + website, no email column change)
     if leads and last_city and last_country:
         append_csv(leads, last_city, last_country)
 
@@ -1243,6 +1319,7 @@ def main():
             card_id=card_id,
             company=lead["Company"],
             website=lead["Website"],
+            email=lead.get("Email") or "",
             new_name=lead["Company"],
             batch=batch_label,
         )
@@ -1253,7 +1330,10 @@ def main():
             seen.add(dom)
 
         if changed:
-            print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
+            if lead.get("Email"):
+                print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']} — {lead['Email']}", flush=True)
+            else:
+                print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']} (no email found)", flush=True)
         else:
             print(f"UNCHANGED ℹ️ — {lead['Company']}", flush=True)
         return True
