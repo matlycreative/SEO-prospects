@@ -41,7 +41,7 @@ jobs:
       # Add a repo secret called KITT_API_KEY in GitHub and paste your Kitt key there
       KITT_API_KEY: ${{ secrets.KITT_API_KEY }}
       # Toggle these to 0/1 as you like
-      KITT_ENABLE: "1"          # "1" = use Kitt, "0" = ignore Kitt
+      KITT_ENABLE: "0"          # "1" = use Kitt, "0" = ignore Kitt
       KITT_ENABLE_VERIFY: "1"   # "1" = verify emails via Kitt, "0" = skip verification
       # Optional timeout override (seconds)
       KITT_TIMEOUT_S: "45"
