@@ -47,7 +47,7 @@ jobs:
       KITT_TIMEOUT_S: "45"
 
       # Tuning
-      DAILY_LIMIT: "5"
+      DAILY_LIMIT: "1"
       PUSH_INTERVAL_S: "20"
       REQUEST_DELAY_S: "0.2"
       CITY_HOPS: "14"
