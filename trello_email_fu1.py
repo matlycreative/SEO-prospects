@@ -6,12 +6,12 @@ FU1 — Poll Trello and send one follow-up email per card.
 Behavior:
 - Reads cards from TRELLO_LIST_ID_FU1
 - Sends one email per card (if not already marked)
-- Uses SUBJECT_A/B and BODY_A/B from env (FU1-specific)
+- Uses SUBJECT_A/B and BODY_A/B defined in this file (no secrets needed for copy)
 - Always uses portfolio link (PORTFOLIO_URL or PUBLIC_BASE/portfolio)
 - Marks card with "Sent: FU1" comment to avoid duplicates
 """
 
-import os, re, time, json, html, unicodedata, mimetypes
+import os, re, time, json, html, unicodedata
 from datetime import datetime
 import requests
 
@@ -88,43 +88,11 @@ UA = f"TrelloEmailer-FU1/clean (+{FROM_EMAIL or 'no-email'})"
 SESS = requests.Session()
 SESS.headers.update({"User-Agent": UA})
 
-# ----------------- templates -----------------
-USE_ENV_TEMPLATES = os.getenv("USE_ENV_TEMPLATES", "1").strip().lower() in ("1","true","yes","on")
-if USE_ENV_TEMPLATES:
-    SUBJECT_A = _get_env("SUBJECT_A", default="Quick follow-up")
-    SUBJECT_B = _get_env("SUBJECT_B", default="Quick follow-up for {First}")
-    BODY_A = _get_env("BODY_A", default=
-"""Hi there,
-Just bumping this in case it got buried.
+# ----------------- templates (HARDCODED) -----------------
+SUBJECT_A = "Quick follow-up"
+SUBJECT_B = "Quick follow-up for {First}"
 
-We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
-
-Examples again:
-{link}
-
-If {Company} has a busy pipeline right now, this could take some weight off your plate.
-Open to a quick test?
-
-Best,
-Matthieu from Matly""")
-    BODY_B = _get_env("BODY_B", default=
-"""Hey {First},
-Just bumping this in case it got buried.
-
-We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
-
-Examples again:
-{link}
-
-If {Company} has a busy pipeline right now, this could take some weight off your plate.
-Open to a quick test?
-
-Best,
-Matthieu from Matly""")
-else:
-    SUBJECT_A = "Quick follow-up"
-    SUBJECT_B = "Quick follow-up for {First}"
-    BODY_A = """Hi there,
+BODY_A = """Hi there,
 Just bumping this in case it got buried.
 
 We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
@@ -137,7 +105,8 @@ Open to a quick test?
 
 Best,
 Matthieu from Matly"""
-    BODY_B = """Hey {First},
+
+BODY_B = """Hey {First},
 Just bumping this in case it got buried.
 
 We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
