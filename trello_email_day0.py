@@ -322,7 +322,7 @@ def signature_html() -> str:
       <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
         <img src="%s"
              alt="Matly Creative"
-             style="max-width:60px;height:auto;border:0;display:block;vertical-align:middle;">
+             style="max-width:30px;height:auto;border:0;display:block;vertical-align:middle;">
       </a>
     </td>
   </tr>
