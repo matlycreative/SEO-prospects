@@ -289,7 +289,7 @@ def wrap_html(inner: str) -> str:
             <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
               <img src="{html.escape(header_logo_url)}"
                    alt="Matly Creative"
-                   style="max-height:90px;display:inline-block;border:0;">
+                   style="max-height:48px;display:inline-block;border:0;">
             </a>
           </td>
         </tr>
@@ -318,11 +318,11 @@ def signature_html() -> str:
         """
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
   <tr>
-    <td align="left" style="padding:8px;">
+    <td align="left" style="padding:0;">
       <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
         <img src="%s"
              alt="Matly Creative"
-             style="max-width:30px;height:auto;border:0;display:block;vertical-align:middle;">
+             style="max-width:90px;height:auto;border:0;display:block;vertical-align:middle;">
       </a>
     </td>
   </tr>
