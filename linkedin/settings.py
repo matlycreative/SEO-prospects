@@ -1,44 +1,28 @@
-# Scrapy settings for linkedin project
-#
-# For simplicity, this file contains only settings considered important or
-# commonly used. You can find more settings consulting the documentation:
-#
-#     https://docs.scrapy.org/en/latest/topics/settings.html
-#     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-#     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
+import os
 
-BOT_NAME = 'Linkedin'
+BOT_NAME = "linkedin"
 
-SPIDER_MODULES = ['Linkedin.spiders']
-NEWSPIDER_MODULE = 'Linkedin.spiders'
+SPIDER_MODULES = ["linkedin.spiders"]
+NEWSPIDER_MODULE = "linkedin.spiders"
 
-# HTTPCACHE_ENABLED = True
-
-# Obey robots.txt rules
 ROBOTSTXT_OBEY = False
 
-SCRAPEOPS_API_KEY = 'YOUR_API_KEY'
-
-SCRAPEOPS_PROXY_ENABLED = True
-
-# Add In The ScrapeOps Monitoring Extension
-EXTENSIONS = {
-'scrapeops_scrapy.extension.ScrapeOpsMonitor': 500, 
-}
-
-# (optional but recommended)
 USER_AGENT = "Mozilla/5.0"
 LOG_LEVEL = "INFO"
 
-DOWNLOADER_MIDDLEWARES = {
+# ---- ScrapeOps (only enable if key is present) ----
+SCRAPEOPS_API_KEY = os.getenv("SCRAPEOPS_API_KEY", "")
+SCRAPEOPS_PROXY_ENABLED = bool(SCRAPEOPS_API_KEY)
 
-    ## ScrapeOps Monitor
-    'scrapeops_scrapy.middleware.retry.RetryMiddleware': 550,
-    'scrapy.downloadermiddlewares.retry.RetryMiddleware': None,
-    
-    ## Proxy Middleware
-    'scrapeops_scrapy_proxy_sdk.scrapeops_scrapy_proxy_sdk.ScrapeOpsScrapyProxySdk': 725,
-}
+if SCRAPEOPS_PROXY_ENABLED:
+    EXTENSIONS = {
+        "scrapeops_scrapy.extension.ScrapeOpsMonitor": 500,
+    }
 
-# Max Concurrency On ScrapeOps Proxy Free Plan is 1 thread
-CONCURRENT_REQUESTS = 1
+    DOWNLOADER_MIDDLEWARES = {
+        "scrapeops_scrapy.middleware.retry.RetryMiddleware": 550,
+        "scrapy.downloadermiddlewares.retry.RetryMiddleware": None,
+        "scrapeops_scrapy_proxy_sdk.scrapeops_scrapy_proxy_sdk.ScrapeOpsScrapyProxySdk": 725,
+    }
+
+    CONCURRENT_REQUESTS = 1
