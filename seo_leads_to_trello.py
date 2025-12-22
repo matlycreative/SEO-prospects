@@ -1386,63 +1386,49 @@ def main():
 
     # Push to Trello
     def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> bool:
-        empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
-        if not empties:
-            print("No empty template card available; skipping push.", flush=True)
-            return False
+    empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
+    if not empties:
+        print("No empty template card available; skipping push.", flush=True)
+        return False
 
-        card_id = empties[0]
-        enriched = enrich_website_contacts(lead["Website"])
-        first = enriched.get("first_name") or ""
-        email = enriched.get("email") or ""
-        hook = enriched.get("job_title") or ""
+    card_id = empties[0]
 
-        # Inject into card description
-        desc_old = trello_get_card(card_id)["desc"]
-        desc_new = normalize_header_block(
-            desc_old,
-            company=lead["Company"],
-            website=lead["Website"],
-            batch=batch_label
-        )
+    # 1) Website enrichment
+    enriched = enrich_website_contacts(lead["Website"])
+    first = enriched.get("first_name") or ""
+    email = enriched.get("email") or ""
+    hook = enriched.get("job_title") or ""
 
-profile_slug = find_linkedin_profile(lead["Company"])
-linkedin_data = run_linkedin_spider(profile_slug) if profile_slug else {}
+    # 3) Build Trello description
+    desc_old = trello_get_card(card_id)["desc"]
+    desc_new = normalize_header_block(
+        desc_old,
+        company=lead["Company"],
+        website=lead["Website"],
+        batch=batch_label
+    )
 
-# Override if LinkedIn provides better data
-if linkedin_data:
-    enriched["first_name"] = linkedin_data.get("name", enriched["first_name"])
-    enriched["job_title"] = linkedin_data.get("description", enriched["job_title"])
-    
+    desc_new = desc_new.replace("First:  ", f"First: {first}  ")
+    desc_new = desc_new.replace("Email:  ", f"Email: {email}  ")
+    desc_new = desc_new.replace("Hook:  ", f"Hook: {hook}  ")
 
-desc_new = desc_new.replace("First:  ", f"First: {first}  ")
-desc_new = desc_new.replace("Email:  ", f"Email: {email}  ")
-desc_new = desc_new.replace("Hook:  ", f"Hook: {hook}  ")
+    # 4) Push to Trello
+    r = SESS.put(
+        f"https://api.trello.com/1/cards/{card_id}",
+        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
+        data={"desc": desc_new, "name": lead["Company"]},
+        timeout=30,
+    )
+    r.raise_for_status()
 
-# Push to Trello
-payload = {
-    "desc": desc_new,
-    "name": lead["Company"]
-}
+    # 5) Mark domain as seen
+    dom = etld1_from_url(lead.get("Website") or "")
+    if dom:
+        seen_domain_write(dom)
+        seen.add(dom)
 
-r = SESS.put(
-    f"https://api.trello.com/1/cards/{card_id}",
-    params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
-    data=payload,
-    timeout=30,
-)
-r.raise_for_status()
-
-        dom = etld1_from_url(lead.get("Website") or "")
-        if dom:
-            seen_domain_write(dom)
-            seen.add(dom)
-
-        if changed:
-            print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
-        else:
-            print(f"UNCHANGED ℹ️ — {lead['Company']}", flush=True)
-        return True
+    print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
+    return True
 
     batch_idx = load_batch_index()
     batch_label = BATCH_SLOTS[batch_idx]
