@@ -7,10 +7,10 @@
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
-BOT_NAME = 'linkedin'
+BOT_NAME = 'Linkedin'
 
-SPIDER_MODULES = ['linkedin.spiders']
-NEWSPIDER_MODULE = 'linkedin.spiders'
+SPIDER_MODULES = ['Linkedin.spiders']
+NEWSPIDER_MODULE = 'Linkedin.spiders'
 
 # HTTPCACHE_ENABLED = True
 
@@ -26,6 +26,9 @@ EXTENSIONS = {
 'scrapeops_scrapy.extension.ScrapeOpsMonitor': 500, 
 }
 
+# (optional but recommended)
+USER_AGENT = "Mozilla/5.0"
+LOG_LEVEL = "INFO"
 
 DOWNLOADER_MIDDLEWARES = {
 
