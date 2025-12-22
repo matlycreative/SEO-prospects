@@ -46,6 +46,51 @@ from functools import lru_cache
 from bs4 import BeautifulSoup
 import re
 
+import subprocess
+import json
+import os
+from pathlib import Path
+
+
+def enrich_from_linkedin(profile_username):
+    """
+    Runs the linkedin_people_profile spider for the given username
+    and returns a dict with name, job title, and LinkedIn URL.
+    """
+    output_file = f"data/linkedin_people_profile.jsonl"
+    
+    # Remove old output if it exists
+    try:
+        os.remove(output_file)
+    except FileNotFoundError:
+        pass
+
+    # Run the spider
+    subprocess.run([
+        "scrapy", "crawl", "linkedin_people_profile",
+        "-a", f"profile_list={profile_username}"
+    ], check=True)
+
+    # Read the output
+    if Path(output_file).exists():
+        with open(output_file, "r") as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    return {
+                        "first_name": data.get("name", "").split(" ")[0],
+                        "job_title": data.get("description", ""),
+                        "linkedin_url": data.get("url", "")
+                    }
+                except Exception as e:
+                    print("Error reading LinkedIn profile data:", e)
+    
+    return {
+        "first_name": None,
+        "job_title": None,
+        "linkedin_url": None
+    }
+
 # ---------- optional local .env ----------
 try:
     from dotenv import load_dotenv
