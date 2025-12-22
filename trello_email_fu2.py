@@ -58,7 +58,7 @@ TRELLO_TOKEN = _get_env("TRELLO_TOKEN")
 LIST_ID      = _get_env("TRELLO_LIST_ID_FU2", "TRELLO_LIST_ID")
 
 FROM_NAME  = _get_env("FROM_NAME",  default="Matthieu from Matly")
-FROM_EMAIL = _get_env("FROM_EMAIL", default="matthieu@matlycreative.com")
+FROM_EMAIL = _get_env("FROM_EMAIL", default="matthieu@matlyascend.com")
 
 SMTP_HOST    = _get_env("SMTP_HOST", "smtp_host", default="smtp.gmail.com")
 SMTP_PORT    = int(_get_env("SMTP_PORT", "smtp_port", default="587"))
@@ -68,7 +68,7 @@ SMTP_USER    = _get_env("SMTP_USER", "SMTP_USERNAME", "smtp_user", "smtp_usernam
 SMTP_DEBUG   = _env_bool("SMTP_DEBUG", "0")
 BCC_TO       = _get_env("BCC_TO", default="").strip()
 
-PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlycreative.com
+PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlyascend.com
 PORTFOLIO_URL = _norm_base(_get_env("PORTFOLIO_URL")) or (PUBLIC_BASE + "/portfolio")
 
 # Link look
@@ -233,7 +233,7 @@ def wrap_html(inner: str) -> str:
     bar_color_bottom = "#292929"
 
     header_logo_url = (
-        "http://matlycreative.com/wp-content/uploads/2025/11/signture_final_version.png"
+        "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
     )
 
     return f"""
@@ -242,11 +242,11 @@ def wrap_html(inner: str) -> str:
     <td align="center">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:1 18px 45px #000000;">
         <tr>
-          <td style="padding:12px 12px;background:{bar_color_top};text-align:center;">
-            <a href="https://matlycreative.com" target="_blank" style="text-decoration:none;">
+          <td style="padding:30px 12px;background:{bar_color_top};text-align:center;">
+            <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
               <img src="{html.escape(header_logo_url)}"
                    alt="Matly Creative"
-                   style="max-height:90px;display:inline-block;border:0;">
+                   style="max-height:48px;display:inline-block;border:0;">
             </a>
           </td>
         </tr>
@@ -267,7 +267,7 @@ def wrap_html(inner: str) -> str:
 """.strip()
 
 # ----------------- signature -----------------
-SIGNATURE_LOGO_URL    = "http://matlycreative.com/wp-content/uploads/2025/11/signture_final_version.png"
+SIGNATURE_LOGO_URL    = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
 SIGNATURE_INLINE      = os.getenv("SIGNATURE_INLINE", "0").strip().lower() in ("1","true","yes","on")
 
 def signature_html() -> str:
@@ -277,7 +277,7 @@ def signature_html() -> str:
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
   <tr>
     <td align="left" style="padding:0%%;">
-      <a href="https://matlycreative.com" target="_blank" style="text-decoration:none;">
+      <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
         <img src="%s"
              alt="Matly Creative"
              style="max-width:90px;height:auto;border:0;display:block;vertical-align:middle;">
