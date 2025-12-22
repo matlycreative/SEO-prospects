@@ -1399,6 +1399,14 @@ def main():
     email = enriched.get("email") or ""
     hook = enriched.get("job_title") or ""
 
+    # 2) LinkedIn enrichment
+    profile_slug = find_linkedin_profile(lead["Company"])
+    if profile_slug:
+        linkedin_data = run_linkedin_spider(profile_slug)
+        if linkedin_data:
+            first = linkedin_data.get("name", first).split(" ")[0]
+            hook = linkedin_data.get("description", hook)
+
     # 3) Build Trello description
     desc_old = trello_get_card(card_id)["desc"]
     desc_new = normalize_header_block(
