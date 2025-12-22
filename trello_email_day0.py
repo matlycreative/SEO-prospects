@@ -60,7 +60,7 @@ TRELLO_TOKEN = _get_env("TRELLO_TOKEN")
 LIST_ID      = _get_env("TRELLO_LIST_ID_DAY0", "TRELLO_LIST_ID")
 
 FROM_NAME  = _get_env("FROM_NAME",  default="Matthieu from Matly")
-FROM_EMAIL = _get_env("FROM_EMAIL", default="matthieu@matlycreative.com")
+FROM_EMAIL = _get_env("FROM_EMAIL", default="matthieu@matlyascend.com")
 
 SMTP_HOST    = _get_env("SMTP_HOST", "smtp_host", default="smtp.gmail.com")
 SMTP_PORT    = int(_get_env("SMTP_PORT", "smtp_port", default="587"))
@@ -70,7 +70,7 @@ SMTP_USER    = _get_env("SMTP_USER", "SMTP_USERNAME", "smtp_user", "smtp_usernam
 SMTP_DEBUG   = _env_bool("SMTP_DEBUG", "0")
 BCC_TO       = _get_env("BCC_TO", default="").strip()
 
-PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlycreative.com
+PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlyascend.com
 PORTFOLIO_URL = _norm_base(_get_env("PORTFOLIO_URL")) or (PUBLIC_BASE + "/portfolio")
 
 # Link look
@@ -286,7 +286,7 @@ def wrap_html(inner: str) -> str:
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:1 18px 45px #000000;">
         <tr>
           <td style="padding:12px 12px;background:{bar_color_top};text-align:center;">
-            <a href="https://matlycreative.com" target="_blank" style="text-decoration:none;">
+            <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
               <img src="{html.escape(header_logo_url)}"
                    alt="Matly Creative"
                    style="max-height:90px;display:inline-block;border:0;">
@@ -319,7 +319,7 @@ def signature_html() -> str:
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
   <tr>
     <td align="left" style="padding:0;">
-      <a href="https://matlycreative.com" target="_blank" style="text-decoration:none;">
+      <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
         <img src="%s"
              alt="Matly Creative"
              style="max-width:90px;height:auto;border:0;display:block;vertical-align:middle;">
