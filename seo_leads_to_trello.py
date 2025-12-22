@@ -1,39 +1,26 @@
 # seo_leads_to_trello.py
 #
-# Generic local-business lead finder for SEO outreach.
+# Local-business lead finder for SEO outreach + Trello push
+# + optional enrichment from website pages + optional LinkedIn (via your Scrapy spider).
 #
-# What it does:
-#   - Picks cities in mostly English-speaking / English-heavy markets:
-#       US, UK, Canada, Australia, New Zealand, Ireland,
-#       Singapore, UAE (Dubai/Abu Dhabi), Hong Kong.
-#   - Uses Nominatim to geocode city
-#   - Uses Overpass + Nominatim POI search to find local businesses in MANY niches:
-#       * Real estate agencies / property management
-#       * Law firms / lawyers
-#       * Dentists / medical clinics
-#       * Accountants / tax advisors / financial advisors
-#       * Marketing / web / advertising agencies
-#       * Gyms / fitness studios
-#       * Beauty salons / hairdressers / spas
-#       * Car repair / garages / vehicle services
-#       * Home services where tagged (plumber, electrician, roofer, etc.)
-#   - Resolves websites (direct tag, Wikidata, Nominatim, Foursquare)
-#   - Deduplicates by domain, checks robots.txt, checks site is up
-#   - Tries to keep ONLY "small-ish" sites, skipping very large/complex ones:
-#       * If HTML bigger than MAX_HTML_KB_SMALL_SITE
-#       * Or too many <script> tags
-#   - Writes leads to CSV
-#   - Fills Trello template cards with:
-#       Company, Website
-#     preserving existing:
-#       First, Email, Hook, Variant
-#
-# No emails are scraped. No contact pages, nothing aggressive; just business name + website.
+# IMPORTANT:
+# - This script is written to RUN (no indentation landmines).
+# - LinkedIn enrichment is OPTIONAL and will gracefully skip if Scrapy/spider/output is missing.
 
-import os, re, json, time, random, csv, pathlib, math
+import os
+import re
+import json
+import time
+import math
+import csv
+import random
+import pathlib
+import subprocess
 from datetime import date, datetime
 from urllib.parse import urljoin, urlparse
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
+from functools import lru_cache
+from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -41,55 +28,7 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import tldextract
 import urllib.robotparser as robotparser
-from functools import lru_cache
 
-from bs4 import BeautifulSoup
-import re
-
-import subprocess
-import json
-import os
-from pathlib import Path
-
-
-def enrich_from_linkedin(profile_username):
-    """
-    Runs the linkedin_people_profile spider for the given username
-    and returns a dict with name, job title, and LinkedIn URL.
-    """
-    output_file = f"data/linkedin_people_profile.jsonl"
-    
-    # Remove old output if it exists
-    try:
-        os.remove(output_file)
-    except FileNotFoundError:
-        pass
-
-    # Run the spider
-    subprocess.run([
-        "scrapy", "crawl", "linkedin_people_profile",
-        "-a", f"profile_list={profile_username}"
-    ], check=True)
-
-    # Read the output
-    if Path(output_file).exists():
-        with open(output_file, "r") as f:
-            for line in f:
-                try:
-                    data = json.loads(line)
-                    return {
-                        "first_name": data.get("name", "").split(" ")[0],
-                        "job_title": data.get("description", ""),
-                        "linkedin_url": data.get("url", "")
-                    }
-                except Exception as e:
-                    print("Error reading LinkedIn profile data:", e)
-    
-    return {
-        "first_name": None,
-        "job_title": None,
-        "linkedin_url": None
-    }
 
 # ---------- optional local .env ----------
 try:
@@ -97,6 +36,7 @@ try:
     load_dotenv()
 except Exception:
     pass
+
 
 # ---------- env helpers ----------
 def env_int(name, default):
@@ -119,6 +59,7 @@ def env_on(name, default=False):
     if v in ("0","false","no","off"): return False
     return bool(default)
 
+
 # ---------- config ----------
 DAILY_LIMIT      = env_int("DAILY_LIMIT", 5)
 PUSH_INTERVAL_S  = env_int("PUSH_INTERVAL_S", 20)
@@ -127,10 +68,10 @@ SEEN_FILE        = os.getenv("SEEN_FILE", "seen_domains.txt")
 
 # "Small site" filtering
 SMALL_SITE_ONLY          = env_on("SMALL_SITE_ONLY", True)
-MAX_HTML_KB_SMALL_SITE   = env_int("MAX_HTML_KB_SMALL_SITE", 600)   # ~600 KB HTML
-MAX_SCRIPTS_SMALL_SITE   = env_int("MAX_SCRIPTS_SMALL_SITE", 40)    # max script tags before we consider it "big"
+MAX_HTML_KB_SMALL_SITE   = env_int("MAX_HTML_KB_SMALL_SITE", 600)
+MAX_SCRIPTS_SMALL_SITE   = env_int("MAX_SCRIPTS_SMALL_SITE", 40)
 
-# Batch rotation for scheduling (e.g. "Monday morning", "Monday afternoon", etc.)
+# Batch rotation
 BATCH_FILE = os.getenv("BATCH_FILE", "batch_state.txt")
 BATCH_SLOTS = [
     "m friday",
@@ -145,130 +86,6 @@ BATCH_SLOTS = [
     "a thursday",
 ]
 
-
-def find_linkedin_profile(company_name):
-    import requests
-    from bs4 import BeautifulSoup
-
-    query = f'site:linkedin.com/in "{company_name}" CEO OR Founder'
-    headers = {"User-Agent": "Mozilla/5.0"}
-    search_url = f"https://www.bing.com/search?q={requests.utils.quote(query)}"
-    
-    try:
-        r = requests.get(search_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if 'linkedin.com/in/' in href:
-                # Extract the LinkedIn username/slug
-                parts = href.split('/')
-                if 'in' in parts:
-                    idx = parts.index('in')
-                    profile_slug = parts[idx+1]
-                    return profile_slug
-    except Exception as e:
-        print(f"Error finding LinkedIn profile: {e}")
-    
-    return None
-
-
-def run_linkedin_spider(profile_slug):
-    import subprocess
-    import os
-    import json
-
-    try:
-        # Remove previous data file if it exists
-        data_file = f"data/linkedin_people_profile.jsonl"
-        if os.path.exists(data_file):
-            os.remove(data_file)
-
-        # Run Scrapy spider via subprocess
-        subprocess.run([
-            "scrapy", "crawl", "linkedin_people_profile",
-            "-a", f"profile_list={profile_slug}"
-        ], cwd="linkedin", check=True)
-
-        # Load the results
-        with open(data_file, "r") as f:
-            for line in f:
-                data = json.loads(line)
-                return data  # return the first (and only) profile scraped
-
-    except Exception as e:
-        print(f"[LinkedIn Spider] Error: {e}")
-
-    return None
-
-
-def enrich_website_contacts(base_url):
-    enriched_data = {
-        "first_name": None,
-        "job_title": None,
-        "email": None
-    }
-
-    potential_paths = ["/contact", "/team", "/about", "/about-us", "/contact-us"]
-    visited_urls = set()
-
-    for path in potential_paths:
-        full_url = urljoin(base_url, path)
-        if full_url in visited_urls:
-            continue
-        visited_urls.add(full_url)
-
-        try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(full_url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                continue
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            text = soup.get_text()
-
-            # Find emails
-            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
-            if emails:
-                enriched_data["email"] = emails[0]
-
-            # Look for names + titles
-            for tag in soup.find_all(['p', 'div', 'li', 'span']):
-                t = tag.get_text(" ", strip=True)
-                if len(t.split()) <= 10 and any(role in t.lower() for role in ['ceo', 'founder', 'owner', 'marketing', 'sales']):
-                    enriched_data["first_name"] = t.split()[0]
-                    enriched_data["job_title"] = ' '.join(t.split()[1:])
-                    break
-
-            if enriched_data["email"]:
-                break
-
-        except Exception as e:
-            print(f"[enrich_website_contacts] error scraping {full_url}: {e}")
-            continue
-
-        time.sleep(1)
-
-    return enriched_data
-
-def load_batch_index() -> int:
-    try:
-        with open(BATCH_FILE, "r", encoding="utf-8") as f:
-            val = f.read().strip()
-            idx = int(val)
-            if 0 <= idx < len(BATCH_SLOTS):
-                return idx
-    except Exception:
-        pass
-    return 0
-
-def save_batch_index(idx: int) -> None:
-    try:
-        os.makedirs(os.path.dirname(BATCH_FILE) or ".", exist_ok=True)
-        with open(BATCH_FILE, "w", encoding="utf-8") as f:
-            f.write(str(idx))
-    except Exception:
-        pass
-
 BUTLER_GRACE_S   = env_int("BUTLER_GRACE_S", 15)
 DEBUG            = env_on("DEBUG", False)
 
@@ -280,7 +97,7 @@ OVERPASS_ENABLED        = env_on("OVERPASS_ENABLED", 1)
 NOMINATIM_POI_ENABLED   = env_on("NOMINATIM_POI_ENABLED", 1)
 OVERPASS_NAME_LOOKUP_ENABLED = env_on("OVERPASS_NAME_LOOKUP_ENABLED", 0)
 
-# Overpass tuning (GH Actions often times out)
+# Overpass tuning
 OVERPASS_TIMEOUT_S      = env_int("OVERPASS_TIMEOUT_S", 45)
 OVERPASS_QUERY_TIMEOUT  = env_int("OVERPASS_QUERY_TIMEOUT", 25)
 OVERPASS_RETRIES        = env_int("OVERPASS_RETRIES", 2)
@@ -298,10 +115,13 @@ UA              = os.getenv("USER_AGENT", f"SEOLeads/1.0 (+{NOMINATIM_EMAIL})")
 TRELLO_KEY      = os.getenv("TRELLO_KEY")
 TRELLO_TOKEN    = os.getenv("TRELLO_TOKEN")
 TRELLO_LIST_ID  = os.getenv("TRELLO_LIST_ID")
-TRELLO_TEMPLATE_CARD_ID = os.getenv("TRELLO_TEMPLATE_CARD_ID")  # optional, if you want cloning
+TRELLO_TEMPLATE_CARD_ID = os.getenv("TRELLO_TEMPLATE_CARD_ID")
 
-# Discovery (Foursquare v3 = single API Key) — optional
+# Discovery (optional)
 FOURSQUARE_API_KEY = os.getenv("FOURSQUARE_API_KEY")
+
+# LinkedIn Scrapy project folder (optional)
+LINKEDIN_SCRAPY_DIR = os.getenv("LINKEDIN_SCRAPY_DIR", "linkedin")  # set "" if spider is at repo root
 
 STATS = {
     "osm_candidates": 0,
@@ -323,7 +143,8 @@ def dbg(msg):
     if DEBUG:
         print(msg, flush=True)
 
-# ---------- threading-free throttling ----------
+
+# ---------- throttling ----------
 _LAST_CALL = {}
 def throttle(key: str, min_interval_s: float):
     now = time.monotonic()
@@ -336,6 +157,7 @@ def throttle(key: str, min_interval_s: float):
 def _sleep():
     time.sleep(REQUEST_DELAY_S)
 
+
 # ---------- HTTP ----------
 SESS = requests.Session()
 SESS.headers.update({"User-Agent": UA, "Accept-Language": "en;q=0.9"})
@@ -345,20 +167,20 @@ try:
         total=3,
         backoff_factor=0.5,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset({"GET"}),
+        allowed_methods=frozenset({"GET", "POST", "PUT"}),
         respect_retry_after_header=True,
     )
 except TypeError:
-    # older urllib3
     _retries = Retry(
         total=3,
         backoff_factor=0.5,
         status_forcelist=[429, 500, 502, 503, 504],
-        method_whitelist=frozenset({"GET"}),
+        method_whitelist=frozenset({"GET", "POST", "PUT"}),
     )
 
 SESS.mount("https://", HTTPAdapter(max_retries=_retries))
 SESS.mount("http://", HTTPAdapter(max_retries=_retries))
+
 
 # ---------- geo / city ----------
 COUNTRY_WHITELIST = [s.strip() for s in (os.getenv("COUNTRY_WHITELIST") or "").split(",") if s.strip()]
@@ -368,9 +190,7 @@ FORCE_CITY    = (os.getenv("FORCE_CITY") or "").strip()
 CITY_HOPS     = env_int("CITY_HOPS", 8)
 OSM_RADIUS_M  = env_int("OSM_RADIUS_M", 2500)
 
-# NEW: Focus on English-heavy markets only
 CITY_ROTATION = [
-    # United States
     ("New York","United States"),
     ("Los Angeles","United States"),
     ("Chicago","United States"),
@@ -383,44 +203,36 @@ CITY_ROTATION = [
     ("Seattle","United States"),
     ("Austin","United States"),
 
-    # United Kingdom
     ("London","United Kingdom"),
     ("Manchester","United Kingdom"),
     ("Birmingham","United Kingdom"),
     ("Edinburgh","United Kingdom"),
     ("Glasgow","United Kingdom"),
 
-    # Canada
     ("Toronto","Canada"),
     ("Vancouver","Canada"),
     ("Montreal","Canada"),
     ("Calgary","Canada"),
     ("Ottawa","Canada"),
 
-    # Australia
     ("Sydney","Australia"),
     ("Melbourne","Australia"),
     ("Brisbane","Australia"),
     ("Perth","Australia"),
     ("Adelaide","Australia"),
 
-    # New Zealand
     ("Auckland","New Zealand"),
     ("Wellington","New Zealand"),
     ("Christchurch","New Zealand"),
 
-    # Ireland
     ("Dublin","Ireland"),
     ("Cork","Ireland"),
 
-    # Singapore
     ("Singapore","Singapore"),
 
-    # UAE (English-heavy, especially Dubai)
     ("Dubai","United Arab Emirates"),
     ("Abu Dhabi","United Arab Emirates"),
 
-    # Hong Kong
     ("Hong Kong","China"),
 ]
 
@@ -435,6 +247,7 @@ def iter_cities():
         pool = [c for c in pool if c[0].lower() == FORCE_CITY.lower()]
     if not pool:
         pool = CITY_ROTATION
+
     if CITY_MODE.lower() == "random":
         random.shuffle(pool)
         for c in pool[:CITY_HOPS]:
@@ -445,6 +258,7 @@ def iter_cities():
         for i in range(hops):
             yield pool[(start + i) % len(pool)]
 
+
 # ---------- utils ----------
 def normalize_url(u):
     if not u:
@@ -453,7 +267,6 @@ def normalize_url(u):
     if u.lower().startswith("mailto:"):
         return None
     if "@" in u and "://" not in u:
-        # plain email typed as "a@b.com"
         if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", u):
             return None
     p = urlparse(u)
@@ -482,6 +295,7 @@ def fetch(url):
     r.raise_for_status()
     return r
 
+
 # ---------- robots ----------
 @lru_cache(maxsize=2048)
 def _robots_parser_for_base(base: str) -> robotparser.RobotFileParser:
@@ -489,12 +303,12 @@ def _robots_parser_for_base(base: str) -> robotparser.RobotFileParser:
     try:
         resp = SESS.get(urljoin(base, "/robots.txt"), timeout=10)
         if resp.status_code != 200:
-            rp.parse([])  # allow all
+            rp.parse([])
             return rp
         rp.parse(resp.text.splitlines())
         return rp
     except Exception:
-        rp.parse([])  # allow all
+        rp.parse([])
         return rp
 
 def allowed_by_robots(base_url: str, path: str = "/") -> bool:
@@ -509,17 +323,11 @@ def allowed_by_robots(base_url: str, path: str = "/") -> bool:
     except Exception:
         return True
 
+
 # ---------- "small site" heuristic ----------
 def is_probably_small_site(html_text: str, url: str) -> bool:
-    """
-    SUPER SIMPLE heuristic to skip obviously "big" / complex sites:
-      - if HTML > MAX_HTML_KB_SMALL_SITE
-      - or too many <script> tags
-    This is not perfect, but it heavily biases toward local/smaller sites.
-    """
     if not SMALL_SITE_ONLY:
         return True
-
     if not html_text:
         return True
 
@@ -528,13 +336,13 @@ def is_probably_small_site(html_text: str, url: str) -> bool:
         dbg(f"[big-site] {url} skipped: HTML {size_bytes/1024:.1f} KB")
         return False
 
-    lower = html_text.lower()
-    script_count = lower.count("<script")
+    script_count = html_text.lower().count("<script")
     if script_count > MAX_SCRIPTS_SMALL_SITE:
         dbg(f"[big-site] {url} skipped: {script_count} <script> tags")
         return False
 
     return True
+
 
 # ---------- geo ----------
 def geocode_city(city, country) -> Tuple[float,float,float,float]:
@@ -552,18 +360,15 @@ def geocode_city(city, country) -> Tuple[float,float,float,float]:
     south, north, west, east = map(float, data[0]["boundingbox"])
     return south, west, north, east
 
-# ---------- OSM candidates (Overpass + Nominatim POI fallback) ----------
 
-# MULTI-NICHE FILTERS:
+# ---------- OSM candidates ----------
 OSM_FILTERS = [
-    # Real estate
     ("office", "estate_agent"),
     ("office", "real_estate"),
     ("office", "property_management"),
     ("shop", "estate_agent"),
     ("shop", "real_estate"),
 
-    # Legal / professional / financial
     ("office", "lawyer"),
     ("office", "solicitor"),
     ("office", "legal"),
@@ -572,36 +377,30 @@ OSM_FILTERS = [
     ("office", "financial_advisor"),
     ("office", "insurance"),
 
-    # Medical / dental
     ("amenity", "dentist"),
     ("amenity", "doctors"),
     ("amenity", "clinic"),
     ("amenity", "hospital"),
 
-    # Marketing / web / design
     ("office", "advertising_agency"),
     ("office", "marketing"),
     ("office", "design"),
 
-    # Fitness
     ("leisure", "fitness_centre"),
     ("leisure", "sports_centre"),
     ("amenity", "gym"),
 
-    # Beauty / wellness
     ("shop", "hairdresser"),
     ("shop", "beauty"),
     ("shop", "cosmetics"),
     ("amenity", "spa"),
     ("amenity", "beauty_salon"),
 
-    # Auto / vehicle services
     ("shop", "car_repair"),
     ("shop", "car"),
     ("amenity", "car_wash"),
     ("amenity", "vehicle_inspection"),
 
-    # Home services (where explicitly tagged as crafts)
     ("craft", "plumber"),
     ("craft", "electrician"),
     ("craft", "hvac"),
@@ -676,7 +475,6 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
     return out
 
 def _viewbox_param(south: float, west: float, north: float, east: float) -> str:
-    # Nominatim expects: left,top,right,bottom
     return f"{west},{north},{east},{south}"
 
 def _guess_name_from_nominatim(item: dict) -> str:
@@ -690,14 +488,7 @@ def _guess_name_from_nominatim(item: dict) -> str:
     return dn
 
 def _nominatim_poi_queries_for(country: str) -> List[str]:
-    """
-    Multi-niche keyword list for Nominatim POI search.
-    Adjusted per country when possible, but we mostly use English terms
-    because we're focusing on English-heavy markets anyway.
-    """
-    c = (country or "").lower().strip()
-
-    base = [
+    return [
         "real estate agency",
         "property management",
         "law firm",
@@ -724,10 +515,6 @@ def _nominatim_poi_queries_for(country: str) -> List[str]:
         "plumber",
         "electrician",
     ]
-
-    # You *could* add local-language variants here, but since we're focusing on
-    # English-heavy markets, the English queries are often enough.
-    return base
 
 def nominatim_poi_candidates(city: str, country: str, south: float, west: float, north: float, east: float) -> List[dict]:
     if not NOMINATIM_POI_ENABLED:
@@ -817,8 +604,8 @@ def get_osm_candidates(city: str, country: str, lat: float, lon: float,
         cands = nominatim_poi_candidates(city, country, south, west, north, east)
     return cands
 
-# ---------- website resolution helpers ----------
 
+# ---------- website resolution helpers ----------
 LEGAL_SUFFIXES = [
     "ag","gmbh","sa","sarl","sàrl","llc","ltd","limited","inc","corp","s.p.a","spa","bv","nv",
     "kg","ohg","ug","gbr","kft","sro","s.r.o","oy","ab","as","aps"
@@ -831,7 +618,7 @@ def _norm_name(s: str) -> str:
     return " ".join(parts)
 
 def _escape_overpass_regex(s: str) -> str:
-    return re.sub(r'([.^$*+?{}$begin:math:display$$end:math:display$\\|()])', r'\\\1', s)
+    return re.sub(r'([.^$*+?{}\\|()])', r'\\\1', s)
 
 def _haversine_km(lat1, lon1, lat2, lon2) -> float:
     if None in (lat1, lon1, lat2, lon2):
@@ -1014,6 +801,7 @@ def resolve_website(biz_name: str, city: str, country: str, lat: float, lon: flo
 
     return None
 
+
 # ---------- Trello helpers ----------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
 LABEL_RE = {lab: re.compile(rf'(?mi)^\s*{re.escape(lab)}\s*:\s*(.*)$') for lab in TARGET_LABELS}
@@ -1097,12 +885,29 @@ def _split_header_rest(desc: str):
     rest = lines[i:]
     return header, rest
 
-def normalize_header_block(desc: str, company: str, website: str, batch: Optional[str] = None) -> str:
+def normalize_header_block(
+    desc: str,
+    company: str,
+    website: str,
+    batch: Optional[str] = None,
+    first: str = "",
+    email: str = "",
+    hook: str = "",
+    variant: str = "",
+) -> str:
+    """
+    Builds the header block deterministically (no fragile .replace("First:  ", ...)).
+    Preserves existing fields only if you pass empty values.
+    """
     desc = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
     header_lines, rest_lines = _split_header_rest(desc)
 
-    # preserve existing values (including Email)
-    preserved = {"First": "", "Email": "", "Hook": "", "Variant": ""}
+    preserved = {
+        "First": "",
+        "Email": "",
+        "Hook": "",
+        "Variant": "",
+    }
 
     i = 0
     while i < len(header_lines):
@@ -1122,15 +927,21 @@ def normalize_header_block(desc: str, company: str, website: str, batch: Optiona
             break
         i += 1
 
+    # Only fall back to preserved if you didn't provide a value
+    first   = first   if first   else preserved["First"]
+    email   = email   if email   else preserved["Email"]
+    hook    = hook    if hook    else preserved["Hook"]
+    variant = variant if variant else preserved["Variant"]
+
     def hard(line: str) -> str:
         return (line or "").rstrip() + "  "
 
     new_header = [
         hard(f"Company: {company or ''}"),
-        hard(f"First: {preserved['First']}"),
-        hard(f"Email: {preserved['Email']}"),
-        hard(f"Hook: {preserved['Hook']}"),
-        hard(f"Variant: {preserved['Variant']}"),
+        hard(f"First: {first or ''}"),
+        hard(f"Email: {email or ''}"),
+        hard(f"Hook: {hook or ''}"),
+        hard(f"Variant: {variant or ''}"),
         hard(f"Website: {website or ''}"),
         "",
     ]
@@ -1144,35 +955,6 @@ def normalize_header_block(desc: str, company: str, website: str, batch: Optiona
 
     out = ("\n".join(new_header + rest_lines)).rstrip("\n") + "\n\n@lead\n"
     return out
-
-def update_card_header(card_id: str, company: str, website: str,
-                       new_name: Optional[str] = None,
-                       batch: Optional[str] = None) -> bool:
-    cur = trello_get_card(card_id)
-    desc_old = cur["desc"]
-    name_old = cur["name"]
-
-    desc_new = normalize_header_block(desc_old, company, website, batch=batch)
-
-    payload = {}
-    if desc_new != desc_old:
-        payload["desc"] = desc_new
-
-    desired_name = (new_name or "").strip()
-    if desired_name and desired_name != name_old.strip():
-        payload["name"] = desired_name
-
-    if not payload:
-        return False
-
-    r = SESS.put(
-        f"https://api.trello.com/1/cards/{card_id}",
-        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
-        data=payload,
-        timeout=30,
-    )
-    r.raise_for_status()
-    return True
 
 def is_template_blank(desc: str) -> bool:
     d = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -1225,6 +1007,7 @@ def ensure_min_blank_templates(list_id: str, template_id: str, need: int):
         clone_template_into_list(template_id, list_id, name=f"Lead (auto) {int(time.time())%100000}-{i+1}")
         time.sleep(1.0)
 
+
 # ---------- seen + CSV ----------
 def load_seen():
     try:
@@ -1266,6 +1049,217 @@ def append_csv(leads, city, country):
         for L in leads:
             w.writerow([ts, city, country, L["Company"], L["Website"]])
 
+
+# ---------- enrichment: website ----------
+def enrich_website_contacts(base_url):
+    enriched_data = {
+        "first_name": None,
+        "job_title": None,
+        "email": None
+    }
+
+    potential_paths = ["/contact", "/team", "/about", "/about-us", "/contact-us"]
+    visited_urls = set()
+
+    for path in potential_paths:
+        full_url = urljoin(base_url, path)
+        if full_url in visited_urls:
+            continue
+        visited_urls.add(full_url)
+
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(full_url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            text = soup.get_text()
+
+            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
+            if emails:
+                enriched_data["email"] = emails[0]
+
+            for tag in soup.find_all(['p', 'div', 'li', 'span']):
+                t = tag.get_text(" ", strip=True)
+                if len(t.split()) <= 10 and any(role in t.lower() for role in ['ceo', 'founder', 'owner', 'marketing', 'sales']):
+                    enriched_data["first_name"] = t.split()[0]
+                    enriched_data["job_title"] = ' '.join(t.split()[1:])
+                    break
+
+            if enriched_data["email"]:
+                break
+
+        except Exception as e:
+            dbg(f"[enrich_website_contacts] error scraping {full_url}: {e}")
+            continue
+
+        time.sleep(1)
+
+    return enriched_data
+
+
+# ---------- enrichment: LinkedIn (optional) ----------
+def find_linkedin_profile(company_name: str) -> Optional[str]:
+    """
+    VERY basic Bing scrape. Returns a LinkedIn /in/ slug if found.
+    """
+    query = f'site:linkedin.com/in "{company_name}" (CEO OR Founder OR Owner OR Marketing)'
+    headers = {"User-Agent": "Mozilla/5.0"}
+    search_url = f"https://www.bing.com/search?q={requests.utils.quote(query)}"
+
+    try:
+        r = requests.get(search_url, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "linkedin.com/in/" in href:
+                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+                if m:
+                    return m.group(1)
+    except Exception as e:
+        dbg(f"[find_linkedin_profile] error: {e}")
+
+    return None
+
+def _pick_scrapy_cwd() -> Optional[str]:
+    """
+    If LINKEDIN_SCRAPY_DIR exists, run scrapy there, else run in repo root.
+    """
+    p = (LINKEDIN_SCRAPY_DIR or "").strip()
+    if p and os.path.isdir(p):
+        return p
+    return None
+
+def run_linkedin_spider(profile_slug: str) -> Optional[dict]:
+    """
+    Runs your Scrapy spider (linkedin_people_profile) and returns the first JSON object.
+    This function is designed not to crash your whole pipeline if Scrapy/spider isn't available.
+    """
+    if not profile_slug:
+        return None
+
+    # Ensure data dir exists at repo root (where we read it)
+    os.makedirs("data", exist_ok=True)
+    out_file = os.path.join("data", "linkedin_people_profile_out.jsonl")
+
+    # Clean old output
+    try:
+        os.remove(out_file)
+    except FileNotFoundError:
+        pass
+
+    cmd = ["scrapy", "crawl", "linkedin_people_profile", "-O", out_file, "-a", f"profile_list={profile_slug}"]
+    cwd = _pick_scrapy_cwd()
+
+    try:
+        subprocess.run(cmd, check=True, cwd=cwd)
+    except FileNotFoundError:
+        dbg("[run_linkedin_spider] scrapy not found; skipping LinkedIn.")
+        return None
+    except subprocess.CalledProcessError as e:
+        dbg(f"[run_linkedin_spider] scrapy failed; skipping LinkedIn. err={e}")
+        return None
+    except Exception as e:
+        dbg(f"[run_linkedin_spider] unexpected error; skipping LinkedIn. err={e}")
+        return None
+
+    if not os.path.exists(out_file):
+        dbg("[run_linkedin_spider] output file not created; skipping.")
+        return None
+
+    try:
+        with open(out_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                return json.loads(line)
+    except Exception as e:
+        dbg(f"[run_linkedin_spider] failed reading output; err={e}")
+
+    return None
+
+
+# ---------- batching ----------
+def load_batch_index() -> int:
+    try:
+        with open(BATCH_FILE, "r", encoding="utf-8") as f:
+            val = f.read().strip()
+            idx = int(val)
+            if 0 <= idx < len(BATCH_SLOTS):
+                return idx
+    except Exception:
+        pass
+    return 0
+
+def save_batch_index(idx: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(BATCH_FILE) or ".", exist_ok=True)
+        with open(BATCH_FILE, "w", encoding="utf-8") as f:
+            f.write(str(idx))
+    except Exception:
+        pass
+
+
+# ---------- push function (TOP-LEVEL; no indentation traps) ----------
+def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> bool:
+    empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
+    if not empties:
+        print("No empty template card available; skipping push.", flush=True)
+        return False
+
+    card_id = empties[0]
+
+    # 1) Website enrichment
+    enriched = enrich_website_contacts(lead["Website"])
+    first = enriched.get("first_name") or ""
+    email = enriched.get("email") or ""
+    hook = enriched.get("job_title") or ""
+
+    # 2) LinkedIn enrichment (optional)
+    profile_slug = find_linkedin_profile(lead["Company"])
+    if profile_slug:
+        linkedin_data = run_linkedin_spider(profile_slug)
+        if linkedin_data:
+            nm = (linkedin_data.get("name") or "").strip()
+            if nm:
+                first = nm.split()[0]
+            desc = (linkedin_data.get("description") or "").strip()
+            if desc:
+                hook = desc
+
+    # 3) Build Trello description robustly (no fragile string replacements)
+    desc_old = trello_get_card(card_id)["desc"]
+    desc_new = normalize_header_block(
+        desc_old,
+        company=lead["Company"],
+        website=lead["Website"],
+        batch=batch_label,
+        first=first,
+        email=email,
+        hook=hook,
+    )
+
+    # 4) Push to Trello
+    r = SESS.put(
+        f"https://api.trello.com/1/cards/{card_id}",
+        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
+        data={"desc": desc_new, "name": lead["Company"]},
+        timeout=30,
+    )
+    r.raise_for_status()
+
+    # 5) Mark domain as seen
+    dom = etld1_from_url(lead.get("Website") or "")
+    if dom:
+        seen_domain_write(dom)
+        seen.add(dom)
+
+    print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
+    return True
+
+
 # ---------- main ----------
 def main():
     missing = [n for n in ["TRELLO_KEY","TRELLO_TOKEN","TRELLO_LIST_ID"] if not os.getenv(n)]
@@ -1285,7 +1279,6 @@ def main():
         t_city = time.time()
         last_city, last_country = city, country
 
-        # --- geocode ---
         try:
             t_geo = time.time()
             south, west, north, east = geocode_city(city, country)
@@ -1296,7 +1289,6 @@ def main():
             print(f"[{city}, {country}] geocode FAILED: {e}", flush=True)
             continue
 
-        # --- OSM / POI sources ---
         if len(leads) < DAILY_LIMIT:
             t_osm = time.time()
             print(f"[{city}] OSM search starting...", flush=True)
@@ -1345,7 +1337,6 @@ def main():
                     STATS["skip_fetch"] += 1
                     continue
 
-                html_text = ""
                 try:
                     resp.encoding = resp.encoding or "utf-8"
                     html_text = resp.text
@@ -1371,72 +1362,14 @@ def main():
         if len(leads) >= DAILY_LIMIT:
             break
 
-    # Trim to limit
     if leads:
         leads = leads[:DAILY_LIMIT]
 
-    # Ensure blank templates exist (optional)
-    need = min(DAILY_LIMIT, len(leads))
-    if PRECLONE and need > 0 and TRELLO_TEMPLATE_CARD_ID:
-        ensure_min_blank_templates(TRELLO_LIST_ID, TRELLO_TEMPLATE_CARD_ID, need)
+    if PRECLONE and leads and TRELLO_TEMPLATE_CARD_ID:
+        ensure_min_blank_templates(TRELLO_LIST_ID, TRELLO_TEMPLATE_CARD_ID, min(DAILY_LIMIT, len(leads)))
 
-    # Save CSV
     if leads and last_city and last_country:
         append_csv(leads, last_city, last_country)
-
-    # Push to Trello
-    def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> bool:
-    empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
-    if not empties:
-        print("No empty template card available; skipping push.", flush=True)
-        return False
-
-    card_id = empties[0]
-
-    # 1) Website enrichment
-    enriched = enrich_website_contacts(lead["Website"])
-    first = enriched.get("first_name") or ""
-    email = enriched.get("email") or ""
-    hook = enriched.get("job_title") or ""
-
-    # 2) LinkedIn enrichment
-    profile_slug = find_linkedin_profile(lead["Company"])
-    if profile_slug:
-        linkedin_data = run_linkedin_spider(profile_slug)
-        if linkedin_data:
-            first = linkedin_data.get("name", first).split(" ")[0]
-            hook = linkedin_data.get("description", hook)
-
-    # 3) Build Trello description
-    desc_old = trello_get_card(card_id)["desc"]
-    desc_new = normalize_header_block(
-        desc_old,
-        company=lead["Company"],
-        website=lead["Website"],
-        batch=batch_label
-    )
-
-    desc_new = desc_new.replace("First:  ", f"First: {first}  ")
-    desc_new = desc_new.replace("Email:  ", f"Email: {email}  ")
-    desc_new = desc_new.replace("Hook:  ", f"Hook: {hook}  ")
-
-    # 4) Push to Trello
-    r = SESS.put(
-        f"https://api.trello.com/1/cards/{card_id}",
-        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
-        data={"desc": desc_new, "name": lead["Company"]},
-        timeout=30,
-    )
-    r.raise_for_status()
-
-    # 5) Mark domain as seen
-    dom = etld1_from_url(lead.get("Website") or "")
-    if dom:
-        seen_domain_write(dom)
-        seen.add(dom)
-
-    print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
-    return True
 
     batch_idx = load_batch_index()
     batch_label = BATCH_SLOTS[batch_idx]
@@ -1461,6 +1394,7 @@ def main():
 
     print(f"SEEN_FILE path: {os.path.abspath(SEEN_FILE)} — total domains in set: {len(seen)}", flush=True)
     print(f"Done. Leads pushed: {pushed}/{len(leads)}", flush=True)
+
 
 if __name__ == "__main__":
     main()
