@@ -244,11 +244,11 @@ def wrap_html(inner: str) -> str:
     <td align="center">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:1 18px 45px #000000;">
         <tr>
-          <td style="padding:12px 12px;background:{bar_color_top};text-align:center;">
+          <td style="padding:30px 12px;background:{bar_color_top};text-align:center;">
             <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
               <img src="{html.escape(header_logo_url)}"
                    alt="Matly Creative"
-                   style="max-height:90px;display:inline-block;border:0;">
+                   style="max-height:48px;display:inline-block;border:0;">
             </a>
           </td>
         </tr>
