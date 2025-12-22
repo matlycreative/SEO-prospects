@@ -1,0 +1,83 @@
+name: Trello FU2 Email
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 08:45 GMT+2 → 06:45 UTC
+    - cron: "55 6 * * 1-5"
+    # 16:45 GMT+2 → 14:45 UTC
+    - cron: "55 14 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  send-fu2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+
+      # Trello
+      TRELLO_KEY:         ${{ secrets.TRELLO_KEY }}
+      TRELLO_TOKEN:       ${{ secrets.TRELLO_TOKEN }}
+      TRELLO_LIST_ID_FU2: ${{ secrets.TRELLO_LIST_ID_FU2 }}
+
+      # SMTP (same setup you fixed for Day0/FU1)
+      SMTP_USER:  ${{ secrets.SMTP_USER }}
+      SMTP_PASS:  ${{ secrets.SMTP_PASS }}
+      SMTP_HOST:  ${{ secrets.SMTP_HOST }}
+      SMTP_PORT:  ${{ secrets.SMTP_PORT }}
+      SMTP_USE_TLS: "1"
+      SMTP_DEBUG:  "1"
+
+      FROM_NAME:  ${{ secrets.FROM_NAME }}
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+
+      # Links (use your domain)
+      PUBLIC_BASE:   ${{ secrets.PUBLIC_BASE }}      # e.g. https://matlycreative.com
+      PORTFOLIO_URL: ${{ secrets.PORTFOLIO_URL }}   # optional override, else PUBLIC_BASE/portfolio
+      LINK_TEXT:  "Our Portfolio"
+      LINK_COLOR: "#858585"
+
+      # Signature + BCC (optional)
+      SIGNATURE_LOGO_URL: ${{ secrets.SIGNATURE_LOGO_URL }}
+      SIGNATURE_INLINE: "0"
+      BCC_TO: ${{ secrets.BCC_TO }}
+
+      # Marker/cache
+      SENT_MARKER_TEXT: "Sent: FU2"
+      SENT_CACHE_FILE:  ".data/sent_fu2.json"
+
+      # Link rendering
+      INCLUDE_PLAIN_URL: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure data dir
+        run: mkdir -p .data
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Debug env
+        run: |
+          echo "PUBLIC_BASE=${PUBLIC_BASE}"
+          echo "PORTFOLIO_URL=${PORTFOLIO_URL}"
+          echo "TRELLO_LIST_ID_FU2=${TRELLO_LIST_ID_FU2}"
+          echo "FROM_EMAIL=${FROM_EMAIL}"
+
+      - name: Run FU2 sender
+        run: python trello_email_fu2.py
