@@ -6,6 +6,10 @@
 # IMPORTANT:
 # - This script is written to RUN (no indentation landmines).
 # - LinkedIn enrichment is OPTIONAL and will gracefully skip if Scrapy/spider/output is missing.
+#
+# NOTE (per your request):
+# - Email extraction is DISABLED. The script will NOT scrape emails from websites
+#   and will ALWAYS write Email: (blank) into Trello.
 
 import os
 import re
@@ -20,7 +24,6 @@ from datetime import date, datetime
 from urllib.parse import urljoin, urlparse
 from typing import Optional, List, Tuple
 from functools import lru_cache
-from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -896,8 +899,8 @@ def normalize_header_block(
     variant: str = "",
 ) -> str:
     """
-    Builds the header block deterministically (no fragile .replace("First:  ", ...)).
-    Preserves existing fields only if you pass empty values.
+    Builds the header block deterministically.
+    IMPORTANT: Email collection is disabled. We force Email: blank.
     """
     desc = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
     header_lines, rest_lines = _split_header_rest(desc)
@@ -927,11 +930,13 @@ def normalize_header_block(
             break
         i += 1
 
-    # Only fall back to preserved if you didn't provide a value
+    # Preserve fields if not provided
     first   = first   if first   else preserved["First"]
-    email   = email   if email   else preserved["Email"]
     hook    = hook    if hook    else preserved["Hook"]
     variant = variant if variant else preserved["Variant"]
+
+    # Email is always cleared (disabled)
+    email = ""
 
     def hard(line: str) -> str:
         return (line or "").rstrip() + "  "
@@ -939,7 +944,7 @@ def normalize_header_block(
     new_header = [
         hard(f"Company: {company or ''}"),
         hard(f"First: {first or ''}"),
-        hard(f"Email: {email or ''}"),
+        hard("Email:"),
         hard(f"Hook: {hook or ''}"),
         hard(f"Variant: {variant or ''}"),
         hard(f"Website: {website or ''}"),
@@ -1050,12 +1055,16 @@ def append_csv(leads, city, country):
             w.writerow([ts, city, country, L["Company"], L["Website"]])
 
 
-# ---------- enrichment: website ----------
+# ---------- enrichment: website (EMAIL DISABLED) ----------
 def enrich_website_contacts(base_url):
+    """
+    Scrapes a few likely pages to find a *first name* and *job title*.
+    Email scraping is disabled.
+    """
     enriched_data = {
         "first_name": None,
         "job_title": None,
-        "email": None
+        "email": None,  # kept for compatibility, but will never be set
     }
 
     potential_paths = ["/contact", "/team", "/about", "/about-us", "/contact-us"]
@@ -1073,22 +1082,16 @@ def enrich_website_contacts(base_url):
             if response.status_code != 200:
                 continue
 
-            soup = BeautifulSoup(response.text, 'html.parser')
-            text = soup.get_text()
+            soup = BeautifulSoup(response.text, "html.parser")
 
-            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
-            if emails:
-                enriched_data["email"] = emails[0]
+            # NOTE: email scraping removed on purpose
 
-            for tag in soup.find_all(['p', 'div', 'li', 'span']):
+            for tag in soup.find_all(["p", "div", "li", "span", "h1", "h2", "strong"]):
                 t = tag.get_text(" ", strip=True)
-                if len(t.split()) <= 10 and any(role in t.lower() for role in ['ceo', 'founder', 'owner', 'marketing', 'sales']):
+                if len(t.split()) <= 10 and any(role in t.lower() for role in ["ceo", "founder", "owner", "marketing", "sales"]):
                     enriched_data["first_name"] = t.split()[0]
-                    enriched_data["job_title"] = ' '.join(t.split()[1:])
+                    enriched_data["job_title"] = " ".join(t.split()[1:])
                     break
-
-            if enriched_data["email"]:
-                break
 
         except Exception as e:
             dbg(f"[enrich_website_contacts] error scraping {full_url}: {e}")
@@ -1139,11 +1142,9 @@ def run_linkedin_spider(profile_slug: str) -> Optional[dict]:
     if not profile_slug:
         return None
 
-    # Ensure data dir exists at repo root (where we read it)
     os.makedirs("data", exist_ok=True)
     out_file = os.path.join("data", "linkedin_people_profile_out.jsonl")
 
-    # Clean old output
     try:
         os.remove(out_file)
     except FileNotFoundError:
@@ -1202,7 +1203,7 @@ def save_batch_index(idx: int) -> None:
         pass
 
 
-# ---------- push function (TOP-LEVEL; no indentation traps) ----------
+# ---------- push function ----------
 def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> bool:
     empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
     if not empties:
@@ -1211,11 +1212,11 @@ def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> b
 
     card_id = empties[0]
 
-    # 1) Website enrichment
+    # 1) Website enrichment (email disabled)
     enriched = enrich_website_contacts(lead["Website"])
     first = enriched.get("first_name") or ""
-    email = enriched.get("email") or ""
     hook = enriched.get("job_title") or ""
+    email = ""  # ALWAYS BLANK
 
     # 2) LinkedIn enrichment (optional)
     profile_slug = find_linkedin_profile(lead["Company"])
@@ -1229,7 +1230,7 @@ def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> b
             if desc:
                 hook = desc
 
-    # 3) Build Trello description robustly (no fragile string replacements)
+    # 3) Build Trello description
     desc_old = trello_get_card(card_id)["desc"]
     desc_new = normalize_header_block(
         desc_old,
@@ -1237,7 +1238,7 @@ def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> b
         website=lead["Website"],
         batch=batch_label,
         first=first,
-        email=email,
+        email=email,  # will be forced blank anyway
         hook=hook,
     )
 
