@@ -235,7 +235,7 @@ def wrap_html(inner: str) -> str:
     bar_color_bottom = "#292929"
 
     header_logo_url = (
-        "http://matlycreative.com/wp-content/uploads/2025/11/signture_final_version.png"
+        "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
     )
 
     return f"""
@@ -269,7 +269,7 @@ def wrap_html(inner: str) -> str:
 """.strip()
 
 # ----------------- signature -----------------
-SIGNATURE_LOGO_URL    = "http://matlycreative.com/wp-content/uploads/2025/11/signture_final_version.png"
+SIGNATURE_LOGO_URL    = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
 SIGNATURE_INLINE      = os.getenv("SIGNATURE_INLINE", "0").strip().lower() in ("1","true","yes","on")
 
 def signature_html() -> str:
