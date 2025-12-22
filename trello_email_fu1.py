@@ -278,7 +278,7 @@ def signature_html() -> str:
         """
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
   <tr>
-    <td align="left" style="padding:0%;">
+    <td align="left" style="padding:0%%;">
       <a href="https://matlycreative.com" target="_blank" style="text-decoration:none;">
         <img src="%s"
              alt="Matly Creative"
