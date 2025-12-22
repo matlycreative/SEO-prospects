@@ -43,6 +43,9 @@ import tldextract
 import urllib.robotparser as robotparser
 from functools import lru_cache
 
+from bs4 import BeautifulSoup
+import re
+
 # ---------- optional local .env ----------
 try:
     from dotenv import load_dotenv
@@ -96,6 +99,111 @@ BATCH_SLOTS = [
     "m thursday",
     "a thursday",
 ]
+
+
+def find_linkedin_profile(company_name):
+    import requests
+    from bs4 import BeautifulSoup
+
+    query = f'site:linkedin.com/in "{company_name}" CEO OR Founder'
+    headers = {"User-Agent": "Mozilla/5.0"}
+    search_url = f"https://www.bing.com/search?q={requests.utils.quote(query)}"
+    
+    try:
+        r = requests.get(search_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if 'linkedin.com/in/' in href:
+                # Extract the LinkedIn username/slug
+                parts = href.split('/')
+                if 'in' in parts:
+                    idx = parts.index('in')
+                    profile_slug = parts[idx+1]
+                    return profile_slug
+    except Exception as e:
+        print(f"Error finding LinkedIn profile: {e}")
+    
+    return None
+
+
+def run_linkedin_spider(profile_slug):
+    import subprocess
+    import os
+    import json
+
+    try:
+        # Remove previous data file if it exists
+        data_file = f"data/linkedin_people_profile.jsonl"
+        if os.path.exists(data_file):
+            os.remove(data_file)
+
+        # Run Scrapy spider via subprocess
+        subprocess.run([
+            "scrapy", "crawl", "linkedin_people_profile",
+            "-a", f"profile_list={profile_slug}"
+        ], cwd="linkedin", check=True)
+
+        # Load the results
+        with open(data_file, "r") as f:
+            for line in f:
+                data = json.loads(line)
+                return data  # return the first (and only) profile scraped
+
+    except Exception as e:
+        print(f"[LinkedIn Spider] Error: {e}")
+
+    return None
+
+
+def enrich_website_contacts(base_url):
+    enriched_data = {
+        "first_name": None,
+        "job_title": None,
+        "email": None
+    }
+
+    potential_paths = ["/contact", "/team", "/about", "/about-us", "/contact-us"]
+    visited_urls = set()
+
+    for path in potential_paths:
+        full_url = urljoin(base_url, path)
+        if full_url in visited_urls:
+            continue
+        visited_urls.add(full_url)
+
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(full_url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            text = soup.get_text()
+
+            # Find emails
+            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
+            if emails:
+                enriched_data["email"] = emails[0]
+
+            # Look for names + titles
+            for tag in soup.find_all(['p', 'div', 'li', 'span']):
+                t = tag.get_text(" ", strip=True)
+                if len(t.split()) <= 10 and any(role in t.lower() for role in ['ceo', 'founder', 'owner', 'marketing', 'sales']):
+                    enriched_data["first_name"] = t.split()[0]
+                    enriched_data["job_title"] = ' '.join(t.split()[1:])
+                    break
+
+            if enriched_data["email"]:
+                break
+
+        except Exception as e:
+            print(f"[enrich_website_contacts] error scraping {full_url}: {e}")
+            continue
+
+        time.sleep(1)
+
+    return enriched_data
 
 def load_batch_index() -> int:
     try:
@@ -1239,13 +1347,46 @@ def main():
             return False
 
         card_id = empties[0]
-        changed = update_card_header(
-            card_id=card_id,
+        enriched = enrich_website_contacts(lead["Website"])
+        first = enriched.get("first_name") or ""
+        email = enriched.get("email") or ""
+        hook = enriched.get("job_title") or ""
+
+        # Inject into card description
+        desc_old = trello_get_card(card_id)["desc"]
+        desc_new = normalize_header_block(
+            desc_old,
             company=lead["Company"],
             website=lead["Website"],
-            new_name=lead["Company"],
-            batch=batch_label,
+            batch=batch_label
         )
+
+profile_slug = find_linkedin_profile(lead["Company"])
+linkedin_data = run_linkedin_spider(profile_slug) if profile_slug else {}
+
+# Override if LinkedIn provides better data
+if linkedin_data:
+    enriched["first_name"] = linkedin_data.get("name", enriched["first_name"])
+    enriched["job_title"] = linkedin_data.get("description", enriched["job_title"])
+    
+
+desc_new = desc_new.replace("First:  ", f"First: {first}  ")
+desc_new = desc_new.replace("Email:  ", f"Email: {email}  ")
+desc_new = desc_new.replace("Hook:  ", f"Hook: {hook}  ")
+
+# Push to Trello
+payload = {
+    "desc": desc_new,
+    "name": lead["Company"]
+}
+
+r = SESS.put(
+    f"https://api.trello.com/1/cards/{card_id}",
+    params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
+    data=payload,
+    timeout=30,
+)
+r.raise_for_status()
 
         dom = etld1_from_url(lead.get("Website") or "")
         if dom:
