@@ -23,11 +23,11 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
       # Trello
-      TRELLO_KEY:        ${{ secrets.TRELLO_KEY }}
-      TRELLO_TOKEN:      ${{ secrets.TRELLO_TOKEN }}
+      TRELLO_KEY:         ${{ secrets.TRELLO_KEY }}
+      TRELLO_TOKEN:       ${{ secrets.TRELLO_TOKEN }}
       TRELLO_LIST_ID_FU1: ${{ secrets.TRELLO_LIST_ID_FU1 }}
 
-      # SMTP (same as Day0, just re-used)
+      # SMTP (same as Day0)
       SMTP_USER:  ${{ secrets.SMTP_USER }}
       SMTP_PASS:  ${{ secrets.SMTP_PASS }}
       SMTP_HOST:  ${{ secrets.SMTP_HOST }}
@@ -43,13 +43,6 @@ jobs:
       PORTFOLIO_URL: ${{ secrets.PORTFOLIO_URL }}   # optional override, else PUBLIC_BASE/portfolio
       LINK_TEXT:  "Our Portfolio"
       LINK_COLOR: "#858585"
-
-      # FU1 templates
-      USE_ENV_TEMPLATES: "1"
-      SUBJECT_A: ${{ secrets.SUBJECT_A_FU1 }}
-      BODY_A:    ${{ secrets.BODY_A_FU1 }}
-      SUBJECT_B: ${{ secrets.SUBJECT_B_FU1 }}
-      BODY_B:    ${{ secrets.BODY_B_FU1 }}
 
       # Signature + BCC (optional)
       SIGNATURE_LOGO_URL: ${{ secrets.SIGNATURE_LOGO_URL }}
