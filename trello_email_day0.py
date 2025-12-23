@@ -97,23 +97,21 @@ if USE_ENV_TEMPLATES:
     SUBJECT_B = _get_env("SUBJECT_B", default="Quick question about {Company}’s listings")
     BODY_A = _get_env("BODY_A", default=
 """Hi there,
-Quick question — do you handle the website / getting found on Google for {Company}?
+Quick question — do you handle the website / Google visibility for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I took a brief look at {Company} and I noticed a couple simple opportunities that could help you get more of the right visitors from Google.
 
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
+If it’s you, can I send 3 quick bullets? If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend""")
     BODY_B = _get_env("BODY_B", default=
 """Hey {First},
-Quick question — do you handle the website / getting found on Google for {Company}?
+Quick question — do you handle the website / Google visibility for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I took a brief look at {Company} and I noticed a couple simple opportunities that could help you get more of the right visitors from Google.
 
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
+If it’s you, can I send 3 quick bullets? If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend""")
@@ -121,22 +119,20 @@ else:
     SUBJECT_A = "Quick question about {Company}’s listings"
     SUBJECT_B = "Quick question about {Company}’s listings"
     BODY_A = """Hi there,
-Quick question — do you handle the website / getting found on Google for {Company}?
+Quick question — do you handle the website / Google visibility for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I took a brief look at {Company} and I noticed a couple simple opportunities that could help you get more of the right visitors from Google.
 
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
+If it’s you, can I send 3 quick bullets? If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend"""
     BODY_B = """Hey {First},
-Quick question — do you handle the website / getting found on Google for {Company}?
+Quick question — do you handle the website / Google visibility for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I took a brief look at {Company} and I noticed a couple simple opportunities that could help you get more of the right visitors from Google.
 
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
+If it’s you, can I send 3 quick bullets? If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend"""
