@@ -100,7 +100,7 @@ If you’re the right person, I can send 3 quick opportunities I noticed that co
 If not, who should I contact at {Company}?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 BODY_B = """Hey {First},
 Did you see my note about {Company}?
@@ -110,7 +110,7 @@ If you’re the right person, I can send 3 quick opportunities I noticed that co
 If not, who should I contact at {Company}?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 # ----------------- parsing -----------------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
