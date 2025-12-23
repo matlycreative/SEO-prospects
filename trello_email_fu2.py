@@ -321,6 +321,18 @@ def send_email(to_email: str, subject: str, body_text: str, *, link_url: str, li
             else (html_core_inner + f"<p style=\"margin:0 0 14px 0;\">{anchor}</p>")
         )
 
+    # Force brand URL color in HTML (Gmail auto-links plain text otherwise)
+    # Only affects HTML version; plain text stays the same.
+    html_core_inner = re.sub(
+        r'(?i)\bmatlyascend\.com\b',
+        lambda m: (
+            f'<a href="https://matlyascend.com" '
+            f'style="color:{html.escape(link_color or LINK_COLOR)};text-decoration:none;">'
+            f'{m.group(0)}</a>'
+        ),
+        html_core_inner
+    )
+
     html_full = wrap_html(html_core_inner + signature_html())
 
     msg = EmailMessage()
