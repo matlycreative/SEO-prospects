@@ -99,7 +99,7 @@ Want me to send the 3 bullets for {Company}?
 If you prefer to check us out first: matlyascend.com
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 BODY_B = """Hey {First},
 When this works, it’s usually from small on-page tweaks (wording + page titles/descriptions) that help pages show up and get clicked more on Google.  ￼
@@ -108,7 +108,7 @@ Want me to send the 3 bullets for {Company}?
 If you prefer to check us out first: matlyascend.com
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 # ----------------- parsing -----------------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
