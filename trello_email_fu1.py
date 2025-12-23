@@ -409,7 +409,7 @@ def main():
             continue
 
         _ = choose_id(company, email_v)  # kept for consistency/future use
-        chosen_link = PORTFOLIO_URL
+        chosen_link = ""
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
