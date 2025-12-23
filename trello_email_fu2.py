@@ -93,27 +93,19 @@ SUBJECT_A = "Still relevant for {Company}?"
 SUBJECT_B = "Still relevant for {Company}, {First}?"
 
 BODY_A = """Hi there,
-Just checking in once more about the listing video editing support for {Company}.
+When this works, it’s usually from small on-page tweaks (wording + page titles/descriptions) that help pages show up and get clicked more on Google.  ￼
 
-We handle real estate listing edits so agencies can stay focused on selling, not on timelines, revisions, or post-production.
-
-You can see a few examples here:
-{link}
-
-If this isn’t a priority right now, no problem at all — a quick “yes” or “no” helps me know whether to close the loop on my side.
+Want me to send the 3 bullets for {Company}?
+If you prefer to check us out first: matlyascend.com
 
 Best,
 Matthieu from Matly"""
 
 BODY_B = """Hey {First},
-Just checking in once more about the listing video editing support for {Company}.
+When this works, it’s usually from small on-page tweaks (wording + page titles/descriptions) that help pages show up and get clicked more on Google.  ￼
 
-We handle real estate listing edits so agencies can stay focused on selling, not on timelines, revisions, or post-production.
-
-You can see a few examples here:
-{link}
-
-If this isn’t a priority right now, no problem at all — a quick “yes” or “no” helps me know whether to close the loop on my side.
+Want me to send the 3 bullets for {Company}?
+If you prefer to check us out first: matlyascend.com
 
 Best,
 Matthieu from Matly"""
