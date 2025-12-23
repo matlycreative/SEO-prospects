@@ -435,7 +435,6 @@ def main():
 
         # Day0 always sends portfolio link
         _ = choose_id(company, email_v)  # keep for future use / consistency
-        chosen_link = PORTFOLIO_URL
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
