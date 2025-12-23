@@ -379,14 +379,24 @@ def main():
         log("No cards found or Trello error.")
         return
 
+    log(f"[info] LIST_ID={LIST_ID} | cards_in_list={len(cards)} | cache_size={len(sent_cache)}")
+
     processed = 0
+    skipped_cache = 0
+    skipped_marked = 0
+    skipped_no_email = 0
+
     for c in cards:
         if MAX_SEND_PER_RUN and processed >= MAX_SEND_PER_RUN:
             break
 
         card_id = c.get("id")
         title   = c.get("name","(no title)")
-        if not card_id or card_id in sent_cache:
+        if not card_id:
+            continue
+
+        if card_id in sent_cache:
+            skipped_cache += 1
             continue
 
         desc = c.get("desc") or ""
@@ -395,16 +405,16 @@ def main():
         first   = (fields.get("First")   or "").strip()
         email_v = clean_email(fields.get("Email") or "") or clean_email(desc)
         if not email_v:
-            log(f"Skip: no valid Email on '{title}'.")
+            skipped_no_email += 1
+            log(f"[skip] no email — {title}")
             continue
 
         if already_marked(card_id, SENT_MARKER_TEXT):
-            log(f"Skip: already marked '{SENT_MARKER_TEXT}' — {title}")
-            sent_cache.add(card_id)
+            skipped_marked += 1
             continue
 
-        _ = choose_id(company, email_v)  # kept if you ever want per-company links later
-        chosen_link = ""
+        _ = choose_id(company, email_v)
+        chosen_link = ""  # keep empty unless you intentionally want injection
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
@@ -426,6 +436,7 @@ def main():
         save_sent_cache(sent_cache)
         time.sleep(0.8)
 
+    log(f"[summary] sent={processed} | skipped_cache={skipped_cache} | skipped_marked={skipped_marked} | skipped_no_email={skipped_no_email}")
     log(f"Done. FU3 emails sent: {processed}")
 
 if __name__ == "__main__":
