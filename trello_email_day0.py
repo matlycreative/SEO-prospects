@@ -4,11 +4,10 @@
 Day-0 — Poll Trello and send one email per card.
 
 RULES:
-- No text links at all (no portfolio link, no appended link).
-- Only clickable logos (header + signature) point to your website.
+- No text links at all.
+- Only clickable logos (header + signature) link to BRAND_URL.
 - Uses Subject/Body A vs B depending on whether "First" exists.
 - Marks card by posting a Trello comment marker to prevent resends.
-- No Trello card moving (Trello automation handles it).
 """
 
 import os, re, time, json, html, unicodedata
@@ -68,7 +67,7 @@ SMTP_USER    = _get_env("SMTP_USER", "SMTP_USERNAME", "smtp_user", "smtp_usernam
 SMTP_DEBUG   = _env_bool("SMTP_DEBUG", "0")
 BCC_TO       = _get_env("BCC_TO", default="").strip()
 
-# Where logos click to (only links you want)
+# Where the logos click to (ONLY link you want)
 BRAND_URL = _norm_base(_get_env("BRAND_URL", default="https://matlyascend.com"))
 
 # Send control
@@ -85,63 +84,43 @@ SESS.headers.update({"User-Agent": UA})
 
 # ----------------- templates -----------------
 USE_ENV_TEMPLATES = os.getenv("USE_ENV_TEMPLATES", "1").strip().lower() in ("1","true","yes","on")
+
+DEFAULT_SUBJ = "Quick question about {Company}’s listings"
+
+DEFAULT_BODY_A = """Hi there,
+
+Quick question — do you handle the website / getting found on Google for {Company}?
+
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
+
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
+
+Best,
+Matthieu from Matly Ascend"""
+
+DEFAULT_BODY_B = """Hi {First},
+
+Quick question — do you handle the website / getting found on Google for {Company}?
+
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
+
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
+
+Best,
+Matthieu from Matly Ascend"""
+
 if USE_ENV_TEMPLATES:
-    SUBJECT_A = _get_env("SUBJECT_A", default="Quick question about {Company}’s listings")
-    SUBJECT_B = _get_env("SUBJECT_B", default="Quick question about {Company}’s listings")
-
-    # IMPORTANT: use {Company} not {{Company}}
-    BODY_A = _get_env("BODY_A", default=
-"""Hi there,
-
-Quick question — do you handle the website / getting found on Google for {Company}?
-
-I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
-
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
-
-Best,
-Matthieu from Matly Ascend""")
-
-    BODY_B = _get_env("BODY_B", default=
-"""Hi {First},
-
-Quick question — do you handle the website / getting found on Google for {Company}?
-
-I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
-
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
-
-Best,
-Matthieu from Matly Ascend""")
+    SUBJECT_A = _get_env("SUBJECT_A", default=DEFAULT_SUBJ)
+    SUBJECT_B = _get_env("SUBJECT_B", default=DEFAULT_SUBJ)
+    BODY_A    = _get_env("BODY_A", default=DEFAULT_BODY_A)
+    BODY_B    = _get_env("BODY_B", default=DEFAULT_BODY_B)
 else:
-    SUBJECT_A = "Quick question about {Company}’s listings"
-    SUBJECT_B = "Quick question about {Company}’s listings"
-
-    BODY_A = """Hi there,
-
-Quick question — do you handle the website / getting found on Google for {Company}?
-
-I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
-
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
-
-Best,
-Matthieu from Matly Ascend"""
-
-    BODY_B = """Hi {First},
-
-Quick question — do you handle the website / getting found on Google for {Company}?
-
-I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
-
-If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
-If not, who’s the best person to reach?
-
-Best,
-Matthieu from Matly Ascend"""
+    SUBJECT_A = DEFAULT_SUBJ
+    SUBJECT_B = DEFAULT_SUBJ
+    BODY_A    = DEFAULT_BODY_A
+    BODY_B    = DEFAULT_BODY_B
 
 # ----------------- parsing -----------------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
@@ -227,100 +206,121 @@ def fill_template(tpl: str, *, company: str, first: str, from_name: str) -> str:
 def sanitize_subject(s: str) -> str:
     return re.sub(r"[\r\n]+", " ", (s or "")).strip()[:250]
 
-def text_to_html(text: str) -> str:
-    esc = html.escape(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    esc = esc.replace("\n\n", "</p><p>").replace("\n", "<br>")
+# ----------------- HTML build -----------------
+FONT_STACK = '"Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+TEXT_COLOR = "#f5f5f7"
+CARD_BG    = "#1e1e1e"
+BAR_BG     = "#292929"
+OUTER_BG   = "#FCFCFC"
+
+HEADER_LOGO_URL    = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
+SIGNATURE_LOGO_URL = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
+
+def text_to_html_paragraphs(text: str) -> str:
+    """
+    Converts plain text into HTML paragraphs with strong inline styles
+    (so Gmail/dark mode is less likely to flip it to black).
+    """
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    parts = [p.strip() for p in re.split(r"\n{2,}", t) if p.strip()]
 
     p_style = (
-        "margin:0 0 16px 0;"
-        "color:#f5f5f7 !important;"
-        "font-size:16px !important;"
-        "line-height:1.8;"
-        "font-weight:400;"
-    )
-    return f'<p style="{p_style}">{esc}</p>'
-
-def wrap_html(inner: str) -> str:
-    inner = inner or ""
-    wrapper_style = (
-        'font-family:"Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;'
-        "color:#f5f5f7 !important;"
-        "font-size:16px;"
-        "line-height:1.8;"
-        "font-weight:400;"
-        "-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;"
+        f"margin:0 0 16px 0;"
+        f"color:{TEXT_COLOR} !important;"
+        f"font-family:{FONT_STACK} !important;"
+        f"font-size:16px !important;"
+        f"line-height:1.8 !important;"
+        f"font-weight:400;"
+        f"background:transparent !important;"
     )
 
-    bar_color_top = "#292929"
-    bar_color_bottom = "#292929"
+    html_parts = []
+    for p in parts:
+        esc = html.escape(p)
+        esc = esc.replace("\n", "<br>")
+        html_parts.append(f'<p style="{p_style}">{esc}</p>')
+    return "".join(html_parts)
 
-    header_logo_url = (
-        "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
-    )
-
+def wrap_html(inner_html: str) -> str:
     brand_href = html.escape(BRAND_URL or "https://matlyascend.com", quote=True)
 
-    return f"""
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#FCFCFC;padding:16px 12px;">
-  <tr>
-    <td align="center">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:0 18px 45px rgba(0,0,0,.35);">
-        <tr>
-          <td style="padding:30px 12px;background:{bar_color_top};text-align:center;">
-            <a href="{brand_href}" target="_blank" style="text-decoration:none;">
-              <img src="{html.escape(header_logo_url)}"
-                   alt="Matly Ascend"
-                   style="max-height:48px;display:inline-block;border:0;">
-            </a>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px 16px 24px 16px;">
-            <div style="{wrapper_style}">
-              {inner}
-            </div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:0;background:{bar_color_bottom};height:24px;line-height:0;font-size:0;">&nbsp;</td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-</table>
-""".strip()
+    # Force color + font on the exact elements Gmail keeps
+    content_td_style = (
+        f"padding:24px 16px 24px 16px;"
+        f"background:{CARD_BG};"
+        f"color:{TEXT_COLOR} !important;"
+        f"font-family:{FONT_STACK} !important;"
+        f"font-size:16px;"
+        f"line-height:1.8;"
+    )
 
-SIGNATURE_LOGO_URL = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+</head>
+<body style="margin:0;padding:0;background:{OUTER_BG};">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{OUTER_BG};padding:16px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:{CARD_BG};border:2.8px solid #000000;box-shadow:0 18px 45px rgba(0,0,0,.35);">
+          <tr>
+            <td style="padding:30px 12px;background:{BAR_BG};text-align:center;">
+              <a href="{brand_href}" target="_blank" style="text-decoration:none;">
+                <img src="{html.escape(HEADER_LOGO_URL)}"
+                     alt="Matly Ascend"
+                     style="max-height:48px;display:inline-block;border:0;">
+              </a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="{content_td_style}">
+              <div style="color:{TEXT_COLOR} !important;font-family:{FONT_STACK} !important;">
+                {inner_html}
+              </div>
+
+              {signature_html()}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0;background:{BAR_BG};height:24px;line-height:0;font-size:0;">&nbsp;</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>""".strip()
 
 def signature_html() -> str:
     brand_href = html.escape(BRAND_URL or "https://matlyascend.com", quote=True)
-    return (
-        """
-<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
+    return f"""
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:6px;">
   <tr>
-    <td align="left" style="padding:0;">
-      <a href="%s" target="_blank" style="text-decoration:none;">
-        <img src="%s"
+    <td align="left" style="padding:0;color:{TEXT_COLOR} !important;font-family:{FONT_STACK} !important;">
+      <a href="{brand_href}" target="_blank" style="text-decoration:none;">
+        <img src="{html.escape(SIGNATURE_LOGO_URL)}"
              alt="Matly Ascend"
-             style="max-width:90px;height:auto;border:0;display:block;vertical-align:middle;">
+             style="max-width:90px;height:auto;border:0;display:block;">
       </a>
     </td>
   </tr>
 </table>
-""" % (brand_href, html.escape(SIGNATURE_LOGO_URL))
-    )
+""".strip()
 
 # ----------------- sender -----------------
 def send_email(to_email: str, subject: str, body_text: str):
     from email.message import EmailMessage
     import smtplib
 
-    # Plain text
-    body_pt = body_text.strip()
+    body_pt = (body_text or "").strip()
 
-    # HTML (NO appended links)
-    html_core_inner = text_to_html(body_text)
-    html_full = wrap_html(html_core_inner + signature_html())
+    html_inner = text_to_html_paragraphs(body_text)
+    html_full  = wrap_html(html_inner)
 
     msg = EmailMessage()
     msg["From"] = f"{FROM_NAME} <{FROM_EMAIL}>"
