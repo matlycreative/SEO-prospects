@@ -93,29 +93,21 @@ SUBJECT_A = "Quick follow-up"
 SUBJECT_B = "Quick follow-up for {First}"
 
 BODY_A = """Hi there,
-Just bumping this in case it got buried.
+Did you see my note about {Company}?
 
-We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
+If you’re the right person, I can send 3 quick opportunities I noticed that could help {{Company} get more of the right visitors from Google.
 
-Examples again:
-{link}
-
-If {Company} has a busy pipeline right now, this could take some weight off your plate.
-Open to a quick test?
+If not, who should I contact at {Company}?
 
 Best,
 Matthieu from Matly"""
 
 BODY_B = """Hey {First},
-Just bumping this in case it got buried.
+Did you see my note about {Company}?
 
-We edit listing videos for agencies that don’t want the hassle of in-house editing — faster turnarounds, consistent style, zero headaches.
+If you’re the right person, I can send 3 quick opportunities I noticed that could help {{Company} get more of the right visitors from Google.
 
-Examples again:
-{link}
-
-If {Company} has a busy pipeline right now, this could take some weight off your plate.
-Open to a quick test?
+If not, who should I contact at {Company}?
 
 Best,
 Matthieu from Matly"""
