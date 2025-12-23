@@ -433,6 +433,30 @@ def main():
             sent_cache.add(card_id)
             continue
 
+        # Day0 always sends portfolio link
+        _ = choose_id(company, email_v)  # keep for future use / consistency
+        chosen_link = PORTFOLIO_URL
+
+        use_b    = bool(first)
+        subj_tpl = SUBJECT_B if use_b else SUBJECT_A
+        body_tpl = BODY_B    if use_b else BODY_A
+
+        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
+        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
+
+        try:
+            send_email(email_v, subject, body, link_url=chosen_link, link_text=LINK_TEXT, link_color=LINK_COLOR)
+            processed += 1
+            log(f"Sent to {email_v} — '{title}'")
+        except Exception as e:
+            log(f"Send failed for '{title}' to {email_v}: {e}")
+            continue
+
+        mark_sent(card_id, SENT_MARKER_TEXT, extra=f"Subject: {subject}")
+        sent_cache.add(card_id)
+        save_sent_cache(sent_cache)
+        time.sleep(0.8)
+
     log(f"Done. Emails sent: {processed}")
 
 if __name__ == "__main__":
