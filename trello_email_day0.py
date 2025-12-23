@@ -4,16 +4,14 @@
 Day-0 — Poll Trello and send one email per card.
 
 RULES:
-- Personalized ID = company slug (fallback email-safe) (still used if you ever need personal pages later)
-- Day0 link behavior:
-  - By default sends PORTFOLIO_URL (or PUBLIC_BASE + /portfolio)
-- No free sample logic at all.
-- No Trello card moving (Trello automation handles it).
+- No text links at all (no portfolio link, no appended link).
+- Only clickable logos (header + signature) point to your website.
 - Uses Subject/Body A vs B depending on whether "First" exists.
 - Marks card by posting a Trello comment marker to prevent resends.
+- No Trello card moving (Trello automation handles it).
 """
 
-import os, re, time, json, html, unicodedata, mimetypes
+import os, re, time, json, html, unicodedata
 from datetime import datetime
 import requests
 
@@ -59,7 +57,7 @@ TRELLO_KEY   = _get_env("TRELLO_KEY")
 TRELLO_TOKEN = _get_env("TRELLO_TOKEN")
 LIST_ID      = _get_env("TRELLO_LIST_ID_DAY0", "TRELLO_LIST_ID")
 
-FROM_NAME  = _get_env("FROM_NAME",  default="Matthieu from Matly")
+FROM_NAME  = _get_env("FROM_NAME",  default="Matthieu from Matly Ascend")
 FROM_EMAIL = _get_env("FROM_EMAIL", default="matthieu@matlyascend.com")
 
 SMTP_HOST    = _get_env("SMTP_HOST", "smtp_host", default="smtp.gmail.com")
@@ -70,20 +68,15 @@ SMTP_USER    = _get_env("SMTP_USER", "SMTP_USERNAME", "smtp_user", "smtp_usernam
 SMTP_DEBUG   = _env_bool("SMTP_DEBUG", "0")
 BCC_TO       = _get_env("BCC_TO", default="").strip()
 
-PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlyascend.com
-PORTFOLIO_URL = _norm_base(_get_env("PORTFOLIO_URL")) or (PUBLIC_BASE + "/portfolio")
-
-# Link look
-INCLUDE_PLAIN_URL = _env_bool("INCLUDE_PLAIN_URL", "0")
-LINK_TEXT         = _get_env("LINK_TEXT",  default="See examples")
-LINK_COLOR        = _get_env("LINK_COLOR", default="#858585")
+# Where logos click to (only links you want)
+BRAND_URL = _norm_base(_get_env("BRAND_URL", default="https://matlyascend.com"))
 
 # Send control
 SENT_MARKER_TEXT = _get_env("SENT_MARKER_TEXT", default="Sent: Day0")
 SENT_CACHE_FILE  = _get_env("SENT_CACHE_FILE", default=".data/sent_day0.json")
 MAX_SEND_PER_RUN = int(_get_env("MAX_SEND_PER_RUN", default="0"))
 
-log(f"[env] PUBLIC_BASE={PUBLIC_BASE} | PORTFOLIO_URL={PORTFOLIO_URL}")
+log(f"[env] BRAND_URL={BRAND_URL}")
 
 # ----------------- HTTP -----------------
 UA = f"TrelloEmailer-Day0/clean (+{FROM_EMAIL or 'no-email'})"
@@ -95,22 +88,27 @@ USE_ENV_TEMPLATES = os.getenv("USE_ENV_TEMPLATES", "1").strip().lower() in ("1",
 if USE_ENV_TEMPLATES:
     SUBJECT_A = _get_env("SUBJECT_A", default="Quick question about {Company}’s listings")
     SUBJECT_B = _get_env("SUBJECT_B", default="Quick question about {Company}’s listings")
+
+    # IMPORTANT: use {Company} not {{Company}}
     BODY_A = _get_env("BODY_A", default=
 """Hi there,
+
 Quick question — do you handle the website / getting found on Google for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
 
 If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
 If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend""")
+
     BODY_B = _get_env("BODY_B", default=
-"""Hey {First},
+"""Hi {First},
+
 Quick question — do you handle the website / getting found on Google for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
 
 If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
 If not, who’s the best person to reach?
@@ -120,20 +118,24 @@ Matthieu from Matly Ascend""")
 else:
     SUBJECT_A = "Quick question about {Company}’s listings"
     SUBJECT_B = "Quick question about {Company}’s listings"
+
     BODY_A = """Hi there,
+
 Quick question — do you handle the website / getting found on Google for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
 
 If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
 If not, who’s the best person to reach?
 
 Best,
 Matthieu from Matly Ascend"""
-    BODY_B = """Hey {First},
+
+    BODY_B = """Hi {First},
+
 Quick question — do you handle the website / getting found on Google for {Company}?
 
-I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
+I noticed a couple simple opportunities that could help {Company} attract more relevant visitors from Google.
 
 If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
 If not, who’s the best person to reach?
@@ -213,15 +215,14 @@ def mark_sent(card_id: str, marker: str, extra: str = ""):
         pass
 
 # ----------------- templating -----------------
-def fill_template(tpl: str, *, company: str, first: str, from_name: str, link: str = "") -> str:
+def fill_template(tpl: str, *, company: str, first: str, from_name: str) -> str:
     def repl(m):
         key = m.group(1).strip().lower()
         if key == "company":   return company or ""
         if key == "first":     return first or ""
         if key == "from_name": return from_name or ""
-        if key == "link":      return link or ""
         return m.group(0)
-    return re.sub(r"{\s*(company|first|from_name|link)\s*}", repl, tpl, flags=re.I)
+    return re.sub(r"{\s*(company|first|from_name)\s*}", repl, tpl, flags=re.I)
 
 def sanitize_subject(s: str) -> str:
     return re.sub(r"[\r\n]+", " ", (s or "")).strip()[:250]
@@ -237,9 +238,7 @@ def text_to_html(text: str) -> str:
         "line-height:1.8;"
         "font-weight:400;"
     )
-    esc = f'<p style="{p_style}">{esc}</p>'
-    esc = esc.replace("<p>", f'<p style="{p_style}">')
-    return esc
+    return f'<p style="{p_style}">{esc}</p>'
 
 def wrap_html(inner: str) -> str:
     inner = inner or ""
@@ -259,16 +258,18 @@ def wrap_html(inner: str) -> str:
         "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
     )
 
+    brand_href = html.escape(BRAND_URL or "https://matlyascend.com", quote=True)
+
     return f"""
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#FCFCFC;padding:16px 12px;">
   <tr>
     <td align="center">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:1 18px 45px #000000;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:720px;border-radius:18px;overflow:hidden;background:#1e1e1e;border:2.8px solid #000000;box-shadow:0 18px 45px rgba(0,0,0,.35);">
         <tr>
           <td style="padding:30px 12px;background:{bar_color_top};text-align:center;">
-            <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
+            <a href="{brand_href}" target="_blank" style="text-decoration:none;">
               <img src="{html.escape(header_logo_url)}"
-                   alt="Matly Creative"
+                   alt="Matly Ascend"
                    style="max-height:48px;display:inline-block;border:0;">
             </a>
           </td>
@@ -290,67 +291,35 @@ def wrap_html(inner: str) -> str:
 """.strip()
 
 SIGNATURE_LOGO_URL = "https://matlyascend.com/wp-content/uploads/2025/12/cropped-logo-with-ascend-white-e.png"
-SIGNATURE_INLINE   = os.getenv("SIGNATURE_INLINE", "0").strip().lower() in ("1","true","yes","on")
 
 def signature_html() -> str:
-    logo_url = SIGNATURE_LOGO_URL
+    brand_href = html.escape(BRAND_URL or "https://matlyascend.com", quote=True)
     return (
         """
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="margin-top:0px;">
   <tr>
     <td align="left" style="padding:0;">
-      <a href="https://matlyascend.com" target="_blank" style="text-decoration:none;">
+      <a href="%s" target="_blank" style="text-decoration:none;">
         <img src="%s"
-             alt="Matly Creative"
+             alt="Matly Ascend"
              style="max-width:90px;height:auto;border:0;display:block;vertical-align:middle;">
       </a>
     </td>
   </tr>
 </table>
-""" % html.escape(logo_url)
+""" % (brand_href, html.escape(SIGNATURE_LOGO_URL))
     )
 
 # ----------------- sender -----------------
-def send_email(to_email: str, subject: str, body_text: str, *, link_url: str, link_text: str, link_color: str):
+def send_email(to_email: str, subject: str, body_text: str):
     from email.message import EmailMessage
     import smtplib
 
-    label = (link_text or "See examples").strip()
-    if link_url and not re.match(r"^https?://", link_url, flags=re.I):
-        link_url = "https://" + link_url
-
-    full = link_url
-    bare = re.sub(r"^https?://", "", full, flags=re.I) if full else ""
-
     # Plain text
-    body_pt = body_text
-    if full:
-        if not INCLUDE_PLAIN_URL:
-            for pat in (full, bare):
-                if pat:
-                    body_pt = body_pt.replace(pat, label)
-        else:
-            if full not in body_pt and bare not in body_pt:
-                body_pt = (body_pt.rstrip() + "\n\n" + full).strip()
+    body_pt = body_text.strip()
 
-    # HTML
-    MARK = "__LINK_MARKER__"
-    body_marked = body_text
-    for pat in (full, bare):
-        if pat:
-            body_marked = body_marked.replace(pat, MARK)
-
-    html_core_inner = text_to_html(body_marked)
-
-    if full:
-        style_attr = f' style="color:{html.escape(link_color or LINK_COLOR)};text-decoration:underline;"'
-        anchor = f'<a{style_attr} href="{html.escape(full, quote=True)}">{html.escape(label)}</a>'
-        html_core_inner = (
-            html_core_inner.replace(MARK, anchor)
-            if MARK in html_core_inner
-            else (html_core_inner + f"<p style=\"margin:0 0 14px 0;\">{anchor}</p>")
-        )
-
+    # HTML (NO appended links)
+    html_core_inner = text_to_html(body_text)
     html_full = wrap_html(html_core_inner + signature_html())
 
     msg = EmailMessage()
@@ -398,7 +367,7 @@ def save_sent_cache(ids):
 # ----------------- main -----------------
 def main():
     missing = []
-    for k in ("TRELLO_KEY","TRELLO_TOKEN","FROM_EMAIL","SMTP_PASS","PUBLIC_BASE"):
+    for k in ("TRELLO_KEY","TRELLO_TOKEN","FROM_EMAIL","SMTP_PASS"):
         if not globals()[k]:
             missing.append(k)
     if not LIST_ID: missing.append("TRELLO_LIST_ID_DAY0")
@@ -436,19 +405,17 @@ def main():
             sent_cache.add(card_id)
             continue
 
-        # Day0 always sends portfolio link
-        _ = choose_id(company, email_v)  # keep for future use / consistency
-        chosen_link = PORTFOLIO_URL
+        _ = choose_id(company, email_v)  # kept for future consistency
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
         body_tpl = BODY_B    if use_b else BODY_A
 
-        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
-        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
+        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME)
+        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME)
 
         try:
-            send_email(email_v, subject, body, link_url=chosen_link, link_text=LINK_TEXT, link_color=LINK_COLOR)
+            send_email(email_v, subject, body)
             processed += 1
             log(f"Sent to {email_v} — '{title}'")
         except Exception as e:
