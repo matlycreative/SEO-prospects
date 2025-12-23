@@ -93,8 +93,8 @@ SESS.headers.update({"User-Agent": UA})
 # ----------------- templates -----------------
 USE_ENV_TEMPLATES = os.getenv("USE_ENV_TEMPLATES", "1").strip().lower() in ("1","true","yes","on")
 if USE_ENV_TEMPLATES:
-    SUBJECT_A = _get_env("SUBJECT_A", default="Quick question about {Company}’s listings")
-    SUBJECT_B = _get_env("SUBJECT_B", default="Quick question about {Company}’s listings")
+    SUBJECT_A = _get_env("SUBJECT_A", default="Quick question for {Company}")
+    SUBJECT_B = _get_env("SUBJECT_B", default="{FirstName} × {Company} — quick question")
     BODY_A = _get_env("BODY_A", default=
 """Hi there,
 Quick question — do you handle the website / Google visibility for {Company}?
@@ -116,8 +116,8 @@ If it’s you, can I send 3 quick bullets? If not, who’s the best person to re
 Best,
 Matthieu from Matly Ascend""")
 else:
-    SUBJECT_A = "Quick question about {Company}’s listings"
-    SUBJECT_B = "Quick question about {Company}’s listings"
+    SUBJECT_A = "Quick question for {Company}"
+    SUBJECT_B = "{FirstName} × {Company} — quick question"
     BODY_A = """Hi there,
 Quick question — do you handle the website / Google visibility for {Company}?
 
