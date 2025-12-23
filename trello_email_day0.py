@@ -97,69 +97,49 @@ if USE_ENV_TEMPLATES:
     SUBJECT_B = _get_env("SUBJECT_B", default="Quick question about {Company}’s listings")
     BODY_A = _get_env("BODY_A", default=
 """Hi there,
-Saw a few of {Company}’s recent listings — really strong properties.
+Quick question — do you handle the website / getting found on Google for {Company}?
 
-Quick one:
-I run a small studio that edits real estate listing videos. Agencies send raw clips, we turn them into clean, cinematic videos that get more eyes on the property.
+I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
 
-Here’s a quick example of what we do:
-{link}
-
-If this could save you time on upcoming {Company} listings, I can show you how it would look for your brand.
-
-Worth a look?
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
 
 Best,
-Matthieu from Matly""")
+Matthieu from Matly Ascend""")
     BODY_B = _get_env("BODY_B", default=
 """Hey {First},
-Saw a few of {Company}’s recent listings — really strong properties.
+Quick question — do you handle the website / getting found on Google for {Company}?
 
-Quick one:
-I run a small studio that edits real estate listing videos. Agencies send raw clips, we turn them into clean, cinematic videos that get more eyes on the property.
+I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
 
-Here’s a quick example of what we do:
-{link}
-
-If this could save you time on upcoming {Company} listings, I can show you how it would look for your brand.
-
-Worth a look?
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
 
 Best,
-Matthieu from Matly""")
+Matthieu from Matly Ascend""")
 else:
     SUBJECT_A = "Quick question about {Company}’s listings"
     SUBJECT_B = "Quick question about {Company}’s listings"
     BODY_A = """Hi there,
-Saw a few of {Company}’s recent listings — really strong properties.
+Quick question — do you handle the website / getting found on Google for {Company}?
 
-Quick one:
-I run a small studio that edits real estate listing videos. Agencies send raw clips, we turn them into clean, cinematic videos that get more eyes on the property.
+I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
 
-Here’s a quick example of what we do:
-{link}
-
-If this could save you time on upcoming {Company} listings, I can show you how it would look for your brand.
-
-Worth a look?
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
     BODY_B = """Hey {First},
-Saw a few of {Company}’s recent listings — really strong properties.
+Quick question — do you handle the website / getting found on Google for {Company}?
 
-Quick one:
-I run a small studio that edits real estate listing videos. Agencies send raw clips, we turn them into clean, cinematic videos that get more eyes on the property.
+I noticed a couple simple opportunities that could help {{Company}} attract more relevant visitors from Google.
 
-Here’s a quick example of what we do:
-{link}
-
-If this could save you time on upcoming {Company} listings, I can show you how it would look for your brand.
-
-Worth a look?
+If it’s you, should I send 3 quick bullets? (You can just reply “yes”.)
+If not, who’s the best person to reach?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 # ----------------- parsing -----------------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
