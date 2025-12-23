@@ -71,6 +71,7 @@ SMTP_DEBUG   = _env_bool("SMTP_DEBUG", "0")
 BCC_TO       = _get_env("BCC_TO", default="").strip()
 
 PUBLIC_BASE   = _norm_base(_get_env("PUBLIC_BASE"))  # e.g., https://matlyascend.com
+PORTFOLIO_URL = _norm_base(_get_env("PORTFOLIO_URL")) or (PUBLIC_BASE + "/portfolio")
 
 # Link look
 INCLUDE_PLAIN_URL = _env_bool("INCLUDE_PLAIN_URL", "0")
@@ -81,6 +82,8 @@ LINK_COLOR        = _get_env("LINK_COLOR", default="#858585")
 SENT_MARKER_TEXT = _get_env("SENT_MARKER_TEXT", default="Sent: Day0")
 SENT_CACHE_FILE  = _get_env("SENT_CACHE_FILE", default=".data/sent_day0.json")
 MAX_SEND_PER_RUN = int(_get_env("MAX_SEND_PER_RUN", default="0"))
+
+log(f"[env] PUBLIC_BASE={PUBLIC_BASE} | PORTFOLIO_URL={PORTFOLIO_URL}")
 
 # ----------------- HTTP -----------------
 UA = f"TrelloEmailer-Day0/clean (+{FROM_EMAIL or 'no-email'})"
@@ -435,13 +438,14 @@ def main():
 
         # Day0 always sends portfolio link
         _ = choose_id(company, email_v)  # keep for future use / consistency
+        chosen_link = PORTFOLIO_URL
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
         body_tpl = BODY_B    if use_b else BODY_A
 
-        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, 
-        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME,
+        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
+        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
 
         try:
             send_email(email_v, subject, body, link_url=chosen_link, link_text=LINK_TEXT, link_color=LINK_COLOR)
