@@ -106,6 +106,9 @@ OVERPASS_QUERY_TIMEOUT  = env_int("OVERPASS_QUERY_TIMEOUT", 25)
 OVERPASS_RETRIES        = env_int("OVERPASS_RETRIES", 2)
 OVERPASS_MIN_INTERVAL_S = env_float("OVERPASS_MIN_INTERVAL_S", 2.0)
 
+# NEW: chunk Overpass filters to avoid massive single queries
+OVERPASS_FILTER_CHUNK   = env_int("OVERPASS_FILTER_CHUNK", 14)
+
 # Nominatim POI fallback tuning
 NOMINATIM_LIMIT                 = env_int("NOMINATIM_LIMIT", 60)
 NOMINATIM_POI_QUERIES_PER_CITY  = env_int("NOMINATIM_POI_QUERIES_PER_CITY", 3)
@@ -193,7 +196,9 @@ FORCE_CITY    = (os.getenv("FORCE_CITY") or "").strip()
 CITY_HOPS     = env_int("CITY_HOPS", 8)
 OSM_RADIUS_M  = env_int("OSM_RADIUS_M", 2500)
 
+# BIG expansion: worldwide major cities
 CITY_ROTATION = [
+    # --- USA ---
     ("New York","United States"),
     ("Los Angeles","United States"),
     ("Chicago","United States"),
@@ -205,38 +210,176 @@ CITY_ROTATION = [
     ("Boston","United States"),
     ("Seattle","United States"),
     ("Austin","United States"),
+    ("Washington","United States"),
+    ("Philadelphia","United States"),
+    ("Phoenix","United States"),
+    ("Denver","United States"),
+    ("San Diego","United States"),
+    ("Las Vegas","United States"),
 
-    ("London","United Kingdom"),
-    ("Manchester","United Kingdom"),
-    ("Birmingham","United Kingdom"),
-    ("Edinburgh","United Kingdom"),
-    ("Glasgow","United Kingdom"),
-
+    # --- Canada ---
     ("Toronto","Canada"),
     ("Vancouver","Canada"),
     ("Montreal","Canada"),
     ("Calgary","Canada"),
     ("Ottawa","Canada"),
+    ("Edmonton","Canada"),
+    ("Quebec City","Canada"),
 
+    # --- UK ---
+    ("London","United Kingdom"),
+    ("Manchester","United Kingdom"),
+    ("Birmingham","United Kingdom"),
+    ("Edinburgh","United Kingdom"),
+    ("Glasgow","United Kingdom"),
+    ("Liverpool","United Kingdom"),
+    ("Bristol","United Kingdom"),
+    ("Leeds","United Kingdom"),
+
+    # --- Ireland ---
+    ("Dublin","Ireland"),
+    ("Cork","Ireland"),
+    ("Galway","Ireland"),
+
+    # --- Australia ---
     ("Sydney","Australia"),
     ("Melbourne","Australia"),
     ("Brisbane","Australia"),
     ("Perth","Australia"),
     ("Adelaide","Australia"),
+    ("Canberra","Australia"),
+    ("Gold Coast","Australia"),
 
+    # --- New Zealand ---
     ("Auckland","New Zealand"),
     ("Wellington","New Zealand"),
     ("Christchurch","New Zealand"),
 
-    ("Dublin","Ireland"),
-    ("Cork","Ireland"),
-
+    # --- Singapore / HK / Taiwan ---
     ("Singapore","Singapore"),
+    ("Hong Kong","China"),
+    ("Taipei","Taiwan"),
 
+    # --- Japan ---
+    ("Tokyo","Japan"),
+    ("Osaka","Japan"),
+    ("Yokohama","Japan"),
+    ("Nagoya","Japan"),
+    ("Fukuoka","Japan"),
+
+    # --- South Korea ---
+    ("Seoul","South Korea"),
+    ("Busan","South Korea"),
+    ("Incheon","South Korea"),
+
+    # --- China (major metros) ---
+    ("Shanghai","China"),
+    ("Beijing","China"),
+    ("Shenzhen","China"),
+    ("Guangzhou","China"),
+
+    # --- Southeast Asia ---
+    ("Bangkok","Thailand"),
+    ("Kuala Lumpur","Malaysia"),
+    ("Jakarta","Indonesia"),
+    ("Manila","Philippines"),
+    ("Hanoi","Vietnam"),
+    ("Ho Chi Minh City","Vietnam"),
+
+    # --- India / Pakistan ---
+    ("Mumbai","India"),
+    ("Delhi","India"),
+    ("Bengaluru","India"),
+    ("Hyderabad","India"),
+    ("Chennai","India"),
+    ("Kolkata","India"),
+    ("Karachi","Pakistan"),
+    ("Lahore","Pakistan"),
+
+    # --- UAE + Middle East ---
     ("Dubai","United Arab Emirates"),
     ("Abu Dhabi","United Arab Emirates"),
+    ("Doha","Qatar"),
+    ("Riyadh","Saudi Arabia"),
+    ("Jeddah","Saudi Arabia"),
+    ("Kuwait City","Kuwait"),
+    ("Manama","Bahrain"),
+    ("Muscat","Oman"),
+    ("Tel Aviv","Israel"),
 
-    ("Hong Kong","China"),
+    # --- Europe: France ---
+    ("Paris","France"),
+    ("Lyon","France"),
+    ("Marseille","France"),
+
+    # --- Europe: Germany ---
+    ("Berlin","Germany"),
+    ("Munich","Germany"),
+    ("Hamburg","Germany"),
+    ("Frankfurt","Germany"),
+    ("Cologne","Germany"),
+
+    # --- Europe: Spain ---
+    ("Madrid","Spain"),
+    ("Barcelona","Spain"),
+    ("Valencia","Spain"),
+
+    # --- Europe: Italy ---
+    ("Rome","Italy"),
+    ("Milan","Italy"),
+    ("Naples","Italy"),
+
+    # --- Europe: Netherlands / Belgium / Switzerland / Austria ---
+    ("Amsterdam","Netherlands"),
+    ("Rotterdam","Netherlands"),
+    ("Brussels","Belgium"),
+    ("Antwerp","Belgium"),
+    ("Zurich","Switzerland"),
+    ("Geneva","Switzerland"),
+    ("Vienna","Austria"),
+
+    # --- Nordics ---
+    ("Stockholm","Sweden"),
+    ("Gothenburg","Sweden"),
+    ("Copenhagen","Denmark"),
+    ("Oslo","Norway"),
+    ("Helsinki","Finland"),
+
+    # --- Central/Eastern Europe ---
+    ("Prague","Czechia"),
+    ("Warsaw","Poland"),
+    ("Budapest","Hungary"),
+    ("Bucharest","Romania"),
+
+    # --- Southern Europe / Turkey ---
+    ("Lisbon","Portugal"),
+    ("Porto","Portugal"),
+    ("Athens","Greece"),
+    ("Istanbul","Turkey"),
+
+    # --- Africa ---
+    ("Cairo","Egypt"),
+    ("Johannesburg","South Africa"),
+    ("Cape Town","South Africa"),
+    ("Nairobi","Kenya"),
+    ("Lagos","Nigeria"),
+    ("Accra","Ghana"),
+    ("Casablanca","Morocco"),
+    ("Tunis","Tunisia"),
+
+    # --- Latin America ---
+    ("Mexico City","Mexico"),
+    ("Guadalajara","Mexico"),
+    ("Monterrey","Mexico"),
+    ("São Paulo","Brazil"),
+    ("Rio de Janeiro","Brazil"),
+    ("Brasília","Brazil"),
+    ("Buenos Aires","Argentina"),
+    ("Santiago","Chile"),
+    ("Lima","Peru"),
+    ("Bogotá","Colombia"),
+    ("Medellín","Colombia"),
+    ("Panama City","Panama"),
 ]
 
 def iter_cities():
@@ -365,49 +508,89 @@ def geocode_city(city, country) -> Tuple[float,float,float,float]:
 
 
 # ---------- OSM candidates ----------
+# Expanded niche coverage (roughly 2x+)
 OSM_FILTERS = [
+    # Real estate / property
     ("office", "estate_agent"),
     ("office", "real_estate"),
     ("office", "property_management"),
     ("shop", "estate_agent"),
     ("shop", "real_estate"),
 
+    # Legal / finance
     ("office", "lawyer"),
     ("office", "solicitor"),
+    ("office", "notary"),
     ("office", "legal"),
     ("office", "accountant"),
     ("office", "tax_advisor"),
     ("office", "financial_advisor"),
     ("office", "insurance"),
+    ("office", "bank"),
 
+    # Medical / healthcare
     ("amenity", "dentist"),
     ("amenity", "doctors"),
     ("amenity", "clinic"),
     ("amenity", "hospital"),
+    ("amenity", "pharmacy"),
+    ("amenity", "veterinary"),
+    ("healthcare", "physiotherapist"),
+    ("healthcare", "chiropractor"),
+    ("shop", "optician"),
 
+    # Marketing / design / IT services
     ("office", "advertising_agency"),
     ("office", "marketing"),
     ("office", "design"),
+    ("office", "it"),
+    ("office", "consulting"),
+    ("office", "architect"),
+    ("office", "coworking"),
 
+    # Fitness / wellness
     ("leisure", "fitness_centre"),
     ("leisure", "sports_centre"),
     ("amenity", "gym"),
+    ("leisure", "yoga"),
+    ("leisure", "dance"),
+    ("shop", "massage"),
 
+    # Beauty / grooming
     ("shop", "hairdresser"),
+    ("shop", "barber"),
     ("shop", "beauty"),
     ("shop", "cosmetics"),
     ("amenity", "spa"),
     ("amenity", "beauty_salon"),
+    ("shop", "nail_salon"),
 
+    # Auto
     ("shop", "car_repair"),
     ("shop", "car"),
     ("amenity", "car_wash"),
     ("amenity", "vehicle_inspection"),
+    ("shop", "tyres"),
+    ("shop", "motorcycle_repair"),
 
+    # Trades / home services
     ("craft", "plumber"),
     ("craft", "electrician"),
     ("craft", "hvac"),
     ("craft", "roofer"),
+    ("craft", "carpenter"),
+    ("craft", "painter"),
+    ("craft", "locksmith"),
+    ("craft", "glaziery"),
+    ("craft", "tiler"),
+    ("craft", "gardener"),
+
+    # Food / hospitality (very common SEO buyers)
+    ("amenity", "restaurant"),
+    ("amenity", "cafe"),
+    ("amenity", "fast_food"),
+    ("tourism", "hotel"),
+    ("tourism", "guest_house"),
 ]
 
 OVERPASS_ENDPOINTS = [
@@ -430,21 +613,38 @@ def _overpass_post(query: str) -> Optional[dict]:
                 continue
     return None
 
+def _chunked(lst, n):
+    if n <= 0:
+        yield lst
+        return
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
+
+def _overpass_query_for_filters(filters: List[Tuple[str,str]], lat: float, lon: float, radius_m: int) -> str:
+    parts = []
+    for k, v in filters:
+        for t in ("node", "way", "relation"):
+            parts.append(f'{t}(around:{radius_m},{lat},{lon})["{k}"="{v}"];')
+    return f"""[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];({ ' '.join(parts) });out tags center;"""
+
 def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dict]:
     if not OVERPASS_ENABLED:
         return []
-    parts = []
-    for k, v in OSM_FILTERS:
-        for t in ("node", "way", "relation"):
-            parts.append(f'{t}(around:{radius_m},{lat},{lon})["{k}"="{v}"];')
-    q = f"""[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];({ ' '.join(parts) });out tags center;"""
 
-    js = _overpass_post(q)
-    if not js:
+    elements_all = []
+
+    # NEW: chunk big filter sets to reduce query-size/timeouts
+    for filt_chunk in _chunked(OSM_FILTERS, OVERPASS_FILTER_CHUNK):
+        q = _overpass_query_for_filters(filt_chunk, lat, lon, radius_m)
+        js = _overpass_post(q)
+        if js and js.get("elements"):
+            elements_all.extend(js.get("elements", []))
+
+    if not elements_all:
         return []
 
     rows = []
-    for el in js.get("elements", []):
+    for el in elements_all:
         tags = el.get("tags", {}) or {}
         name = (tags.get("name") or "").strip()
         if not name:
@@ -491,32 +691,86 @@ def _guess_name_from_nominatim(item: dict) -> str:
     return dn
 
 def _nominatim_poi_queries_for(country: str) -> List[str]:
+    # Expanded keyword set (2x+)
     return [
+        # Real estate / property
         "real estate agency",
         "property management",
+        "letting agency",
+        "realtor",
+
+        # Legal / finance
         "law firm",
         "attorney",
+        "solicitor",
+        "notary",
+        "accounting firm",
+        "bookkeeping",
+        "tax advisor",
+        "financial advisor",
+        "insurance broker",
+
+        # Medical / health
         "dental clinic",
         "dentist",
         "medical clinic",
         "doctor",
-        "accounting firm",
-        "tax advisor",
-        "bookkeeping",
+        "physiotherapy",
+        "chiropractor",
+        "veterinary clinic",
+        "pharmacy",
+        "optician",
+
+        # Marketing / design / IT
         "marketing agency",
         "digital marketing",
+        "branding studio",
         "web design agency",
+        "graphic design studio",
+        "IT services",
+        "IT consulting",
+        "architecture firm",
+        "coworking space",
+
+        # Fitness / wellness
         "gym",
         "fitness studio",
         "fitness centre",
+        "yoga studio",
+        "pilates studio",
+        "massage therapist",
+        "spa",
+
+        # Beauty / personal care
         "beauty salon",
         "hairdresser",
-        "spa",
+        "barber",
+        "nail salon",
+
+        # Auto
         "car repair",
         "auto repair",
         "garage",
+        "tire shop",
+        "car wash",
+        "motorcycle repair",
+
+        # Trades / home services
         "plumber",
         "electrician",
+        "HVAC company",
+        "roofing company",
+        "painter",
+        "locksmith",
+        "carpenter",
+        "landscaping",
+        "gardener",
+
+        # Hospitality
+        "restaurant",
+        "cafe",
+        "hotel",
+        "guest house",
     ]
 
 def nominatim_poi_candidates(city: str, country: str, south: float, west: float, north: float, east: float) -> List[dict]:
@@ -563,7 +817,7 @@ def nominatim_poi_candidates(city: str, country: str, south: float, west: float,
             klass = (it.get("class") or "").lower()
             typ   = (it.get("type") or "").lower()
 
-            if klass and klass not in ("office", "shop", "amenity", "tourism", "leisure", "craft"):
+            if klass and klass not in ("office", "shop", "amenity", "tourism", "leisure", "craft", "healthcare"):
                 continue
             if typ in ("house", "residential", "road", "yes", "city", "town", "village", "suburb", "neighbourhood"):
                 continue
@@ -1088,7 +1342,7 @@ def enrich_website_contacts(base_url):
 
             for tag in soup.find_all(["p", "div", "li", "span", "h1", "h2", "strong"]):
                 t = tag.get_text(" ", strip=True)
-                if len(t.split()) <= 10 and any(role in t.lower() for role in ["ceo", "founder", "owner", "marketing", "sales"]):
+                if len(t.split()) <= 10 and any(role in t.lower() for role in ["ceo", "founder", "owner", "marketing", "sales", "director", "manager"]):
                     enriched_data["first_name"] = t.split()[0]
                     enriched_data["job_title"] = " ".join(t.split()[1:])
                     break
