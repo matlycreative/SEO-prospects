@@ -407,7 +407,7 @@ def main():
             continue
 
         _ = choose_id(company, email_v)  # kept in case you want per-company links later
-        chosen_link = PORTFOLIO_URL
+        chosen_link = ""
 
         use_b    = bool(first)
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
