@@ -93,30 +93,24 @@ SUBJECT_A = "Before I close this out for {Company}"
 SUBJECT_B = "Before I close this out, {First}"
 
 BODY_A = """Hi there,
-Just one last quick nudge from my side about the listing video editing support for {Company}.
+Just one last quick nudge from my side.
 
-We handle real estate listing edits so your team can stay focused on winning and managing clients instead of spending hours in the timeline.
+Should I send the 3 bullets for {Company}, or close this out for now?  ￼
 
-You can see a few examples of what we do here:
-{link}
-
-If this isn’t a priority right now, no problem at all — a short reply (even “not a fit”) helps me know whether to close the loop on my side.
+If it’s someone else at {Company}, who should I reach?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 BODY_B = """Hey {First},
-Just one last quick nudge from my side about the listing video editing support for {Company}.
+Just one last quick nudge from my side.
 
-We handle real estate listing edits so your team can stay focused on winning and managing clients instead of spending hours in the timeline.
+Should I send the 3 bullets for {Company}, or close this out for now?  ￼
 
-You can see a few examples of what we do here:
-{link}
-
-If this isn’t a priority right now, no problem at all — a short reply (even “not a fit”) helps me know whether to close the loop on my side.
+If it’s someone else at {Company}, who should I reach?
 
 Best,
-Matthieu from Matly"""
+Matthieu from Matly Ascend"""
 
 # ----------------- parsing -----------------
 TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
