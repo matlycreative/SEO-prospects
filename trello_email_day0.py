@@ -440,8 +440,8 @@ def main():
         subj_tpl = SUBJECT_B if use_b else SUBJECT_A
         body_tpl = BODY_B    if use_b else BODY_A
 
-        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
-        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME, link=chosen_link)
+        subject = fill_template(subj_tpl, company=company, first=first, from_name=FROM_NAME, 
+        body    = fill_template(body_tpl, company=company, first=first, from_name=FROM_NAME,
 
         try:
             send_email(email_v, subject, body, link_url=chosen_link, link_text=LINK_TEXT, link_color=LINK_COLOR)
