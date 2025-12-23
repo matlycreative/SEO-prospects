@@ -105,7 +105,7 @@ Matthieu from Matly Ascend"""
 BODY_B = """Hey {First},
 Just one last quick nudge from my side.
 
-Should I send the 3 bullets for {Company}, or close this out for now?  ￼
+Should I send the 3 bullets for {Company}, or close this out for now?
 
 If it’s someone else at {Company}, who should I reach?
 
