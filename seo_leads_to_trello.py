@@ -90,7 +90,7 @@ MAX_SCRIPTS_SMALL_SITE   = env_int("MAX_SCRIPTS_SMALL_SITE", 40)
 # Batch rotation
 BATCH_FILE = os.getenv("BATCH_FILE", "batch_state.txt")
 BATCH_SLOTS = [
-    "m monday 2",
+    "a monday 2",
     "a monday",
     "m tuesday",
     "a tuesday",
