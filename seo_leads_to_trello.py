@@ -64,7 +64,7 @@ def env_on(name, default=False):
 
 
 # ---------- config ----------
-DAILY_LIMIT      = env_int("DAILY_LIMIT", 5)
+DAILY_LIMIT      = env_int("DAILY_LIMIT", 20)
 PUSH_INTERVAL_S  = env_int("PUSH_INTERVAL_S", 20)
 REQUEST_DELAY_S  = env_float("REQUEST_DELAY_S", 0.2)
 SEEN_FILE        = os.getenv("SEEN_FILE", "seen_domains.txt")
@@ -77,9 +77,7 @@ MAX_SCRIPTS_SMALL_SITE   = env_int("MAX_SCRIPTS_SMALL_SITE", 40)
 # Batch rotation
 BATCH_FILE = os.getenv("BATCH_FILE", "batch_state.txt")
 BATCH_SLOTS = [
-    "m friday",
-    "a friday",
-    "m monday",
+    "m monday 2",
     "a monday",
     "m tuesday",
     "a tuesday",
@@ -87,6 +85,8 @@ BATCH_SLOTS = [
     "a wednesday",
     "m thursday",
     "a thursday",
+    "m friday",
+    "a friday",
 ]
 
 BUTLER_GRACE_S   = env_int("BUTLER_GRACE_S", 15)
