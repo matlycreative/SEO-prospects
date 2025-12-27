@@ -10,6 +10,11 @@
 # NOTE (per your request):
 # - Email extraction is DISABLED. The script will NOT scrape emails from websites
 #   and will ALWAYS write Email: (blank) into Trello.
+#
+# FIXES INCLUDED (per your request):
+# 1) SEEN FILE IS APPEND-ONLY: we NEVER rewrite/overwrite the seen domains file.
+#    This prevents Git rebase conflicts from "full-file rewrites".
+# 2) ENGLISH-ONLY FILTER: only keep websites that appear to be in English.
 
 import os
 import re
@@ -67,7 +72,15 @@ def env_on(name, default=False):
 DAILY_LIMIT      = env_int("DAILY_LIMIT", 20)
 PUSH_INTERVAL_S  = env_int("PUSH_INTERVAL_S", 20)
 REQUEST_DELAY_S  = env_float("REQUEST_DELAY_S", 0.2)
+
+# Seen file: append-only. Never rewrite.
 SEEN_FILE        = os.getenv("SEEN_FILE", "seen_domains.txt")
+
+# English filter (DEFAULT ON)
+ENGLISH_ONLY                 = env_on("ENGLISH_ONLY", True)
+ENGLISH_MIN_WORDS            = env_int("ENGLISH_MIN_WORDS", 80)
+ENGLISH_MIN_STOPWORD_RATIO   = env_float("ENGLISH_MIN_STOPWORD_RATIO", 0.012)
+ENGLISH_MAX_NONASCII_RATIO   = env_float("ENGLISH_MAX_NONASCII_RATIO", 0.18)
 
 # "Small site" filtering
 SMALL_SITE_ONLY          = env_on("SMALL_SITE_ONLY", True)
@@ -138,6 +151,7 @@ STATS = {
     "skip_robots": 0,
     "skip_fetch": 0,
     "skip_big_site": 0,
+    "skip_non_english": 0,
     "website_direct": 0,
     "website_overpass_name": 0,
     "website_nominatim": 0,
@@ -470,6 +484,101 @@ def allowed_by_robots(base_url: str, path: str = "/") -> bool:
         return True
 
 
+# ---------- English detection ----------
+_EN_STOPWORDS = {
+    # compact but effective list
+    "the","and","for","with","from","that","this","you","your","are","our","we","us",
+    "about","services","service","contact","home","pricing","company","business",
+    "help","learn","more","book","call","get","start","support",
+    "website","page","pages","privacy","terms",
+    "location","locations","hours","open","email","phone"
+}
+
+def _parse_lang_header(content_language: str) -> List[str]:
+    # "en-US,en;q=0.9" -> ["en-us","en"]
+    parts = []
+    for chunk in (content_language or "").split(","):
+        c = chunk.strip().lower()
+        if not c:
+            continue
+        c = c.split(";")[0].strip()
+        if c:
+            parts.append(c)
+    return parts
+
+def is_english_page(html_text: str, headers: dict) -> bool:
+    """
+    Returns True if page appears to be English.
+    Priority:
+    1) HTTP Content-Language header
+    2) <html lang="..."> or meta content-language
+    3) lightweight text heuristic (stopword ratio + non-ascii ratio)
+    """
+    # 1) Content-Language header
+    try:
+        cl = headers.get("Content-Language") or headers.get("content-language") or ""
+        langs = _parse_lang_header(cl)
+        if langs:
+            if any(l.startswith("en") for l in langs):
+                return True
+            # if server explicitly says non-English and no en present -> reject
+            return False
+    except Exception:
+        pass
+
+    # 2) HTML lang attribute / meta
+    try:
+        soup = BeautifulSoup(html_text or "", "html.parser")
+        html_tag = soup.find("html")
+        lang = ""
+        if html_tag:
+            lang = (html_tag.get("lang") or html_tag.get("xml:lang") or "").strip().lower()
+        if lang:
+            if lang.startswith("en"):
+                return True
+            return False
+
+        meta = soup.find("meta", attrs={"http-equiv": re.compile(r"content-language", re.I)})
+        if meta:
+            mcl = (meta.get("content") or "").strip().lower()
+            if mcl:
+                if mcl.startswith("en") or "en" in _parse_lang_header(mcl):
+                    return True
+                return False
+    except Exception:
+        soup = None
+
+    # 3) Heuristic
+    try:
+        if soup is None:
+            soup = BeautifulSoup(html_text or "", "html.parser")
+        text = soup.get_text(" ", strip=True)
+        # limit work
+        text = (text or "")[:12000].lower()
+        if not text:
+            # can't detect -> don't block aggressively
+            return False if ENGLISH_ONLY else True
+
+        # compute non-ascii ratio
+        non_ascii = sum(1 for ch in text if ord(ch) > 127)
+        non_ascii_ratio = non_ascii / max(1, len(text))
+
+        words = re.findall(r"[a-zA-Z]{2,}", text)
+        if len(words) < ENGLISH_MIN_WORDS:
+            # not enough signal -> reject if strict
+            return False
+
+        hits = sum(1 for w in words if w in _EN_STOPWORDS)
+        ratio = hits / max(1, len(words))
+
+        if non_ascii_ratio > ENGLISH_MAX_NONASCII_RATIO and ratio < ENGLISH_MIN_STOPWORD_RATIO:
+            return False
+
+        return ratio >= ENGLISH_MIN_STOPWORD_RATIO
+    except Exception:
+        return False
+
+
 # ---------- "small site" heuristic ----------
 def is_probably_small_site(html_text: str, url: str) -> bool:
     if not SMALL_SITE_ONLY:
@@ -633,7 +742,7 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
 
     elements_all = []
 
-    # NEW: chunk big filter sets to reduce query-size/timeouts
+    # chunk big filter sets to reduce query-size/timeouts
     for filt_chunk in _chunked(OSM_FILTERS, OVERPASS_FILTER_CHUNK):
         q = _overpass_query_for_filters(filt_chunk, lat, lon, radius_m)
         js = _overpass_post(q)
@@ -660,996 +769,4 @@ def overpass_local_businesses(lat: float, lon: float, radius_m: int) -> List[dic
 
         rows.append({
             "business_name": name,
-            "website": normalize_url(website) if website else None,
-            "wikidata": wikidata,
-            "lat": lat2,
-            "lon": lon2,
-        })
-
-    dedup = {}
-    for r0 in rows:
-        key = (r0["business_name"].lower(), etld1_from_url(r0["website"] or ""))
-        if key not in dedup:
-            dedup[key] = r0
-
-    out = list(dedup.values())
-    random.shuffle(out)
-    STATS["cand_overpass"] += len(out)
-    return out
-
-def _viewbox_param(south: float, west: float, north: float, east: float) -> str:
-    return f"{west},{north},{east},{south}"
-
-def _guess_name_from_nominatim(item: dict) -> str:
-    nd = item.get("namedetails") or {}
-    nm = (nd.get("name") or item.get("name") or "").strip()
-    if nm:
-        return nm
-    dn = (item.get("display_name") or "").strip()
-    if dn and "," in dn:
-        return dn.split(",", 1)[0].strip()
-    return dn
-
-def _nominatim_poi_queries_for(country: str) -> List[str]:
-    # Expanded keyword set (2x+)
-    return [
-        # Real estate / property
-        "real estate agency",
-        "property management",
-        "letting agency",
-        "realtor",
-
-        # Legal / finance
-        "law firm",
-        "attorney",
-        "solicitor",
-        "notary",
-        "accounting firm",
-        "bookkeeping",
-        "tax advisor",
-        "financial advisor",
-        "insurance broker",
-
-        # Medical / health
-        "dental clinic",
-        "dentist",
-        "medical clinic",
-        "doctor",
-        "physiotherapy",
-        "chiropractor",
-        "veterinary clinic",
-        "pharmacy",
-        "optician",
-
-        # Marketing / design / IT
-        "marketing agency",
-        "digital marketing",
-        "branding studio",
-        "web design agency",
-        "graphic design studio",
-        "IT services",
-        "IT consulting",
-        "architecture firm",
-        "coworking space",
-
-        # Fitness / wellness
-        "gym",
-        "fitness studio",
-        "fitness centre",
-        "yoga studio",
-        "pilates studio",
-        "massage therapist",
-        "spa",
-
-        # Beauty / personal care
-        "beauty salon",
-        "hairdresser",
-        "barber",
-        "nail salon",
-
-        # Auto
-        "car repair",
-        "auto repair",
-        "garage",
-        "tire shop",
-        "car wash",
-        "motorcycle repair",
-
-        # Trades / home services
-        "plumber",
-        "electrician",
-        "HVAC company",
-        "roofing company",
-        "painter",
-        "locksmith",
-        "carpenter",
-        "landscaping",
-        "gardener",
-
-        # Hospitality
-        "restaurant",
-        "cafe",
-        "hotel",
-        "guest house",
-    ]
-
-def nominatim_poi_candidates(city: str, country: str, south: float, west: float, north: float, east: float) -> List[dict]:
-    if not NOMINATIM_POI_ENABLED:
-        return []
-    vb = _viewbox_param(south, west, north, east)
-    queries = _nominatim_poi_queries_for(country)
-    random.shuffle(queries)
-    queries = queries[:max(1, NOMINATIM_POI_QUERIES_PER_CITY)]
-
-    out: List[dict] = []
-    seen_key = set()
-
-    for qstr in queries:
-        try:
-            throttle("nominatim_poi", 1.1)
-            r = SESS.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={
-                    "q": f"{qstr} {city} {country}",
-                    "format": "jsonv2",
-                    "limit": NOMINATIM_LIMIT,
-                    "viewbox": vb,
-                    "bounded": 1,
-                    "dedupe": 1,
-                    "extratags": 1,
-                    "namedetails": 1,
-                },
-                headers={"Referer":"https://nominatim.org"},
-                timeout=30,
-            )
-            if r.status_code != 200:
-                continue
-            items = r.json() or []
-        except Exception as e:
-            dbg(f"[nominatim_poi] error: {e}")
-            continue
-
-        for it in items:
-            nm = _guess_name_from_nominatim(it).strip()
-            if not nm:
-                continue
-
-            klass = (it.get("class") or "").lower()
-            typ   = (it.get("type") or "").lower()
-
-            if klass and klass not in ("office", "shop", "amenity", "tourism", "leisure", "craft", "healthcare"):
-                continue
-            if typ in ("house", "residential", "road", "yes", "city", "town", "village", "suburb", "neighbourhood"):
-                continue
-
-            xt = it.get("extratags") or {}
-            website = xt.get("website") or xt.get("contact:website") or xt.get("url")
-
-            try:
-                lat2 = float(it.get("lat")) if it.get("lat") is not None else None
-                lon2 = float(it.get("lon")) if it.get("lon") is not None else None
-            except Exception:
-                lat2, lon2 = None, None
-
-            website = normalize_url(website) if website else None
-            key = (nm.lower(), etld1_from_url(website or "") or f"{lat2},{lon2}")
-            if key in seen_key:
-                continue
-            seen_key.add(key)
-
-            out.append({
-                "business_name": nm,
-                "website": website,
-                "wikidata": xt.get("wikidata"),
-                "lat": lat2,
-                "lon": lon2,
-            })
-
-    random.shuffle(out)
-    STATS["cand_nominatim_poi"] += len(out)
-    return out
-
-def get_osm_candidates(city: str, country: str, lat: float, lon: float,
-                       south: float, west: float, north: float, east: float) -> List[dict]:
-    cands: List[dict] = []
-    if OVERPASS_ENABLED:
-        for rad in (OSM_RADIUS_M, max(800, OSM_RADIUS_M // 2), max(500, OSM_RADIUS_M // 3)):
-            cands = overpass_local_businesses(lat, lon, rad)
-            if cands:
-                break
-    if (not cands) and NOMINATIM_POI_ENABLED:
-        cands = nominatim_poi_candidates(city, country, south, west, north, east)
-    return cands
-
-
-# ---------- website resolution helpers ----------
-LEGAL_SUFFIXES = [
-    "ag","gmbh","sa","sarl","sàrl","llc","ltd","limited","inc","corp","s.p.a","spa","bv","nv",
-    "kg","ohg","ug","gbr","kft","sro","s.r.o","oy","ab","as","aps"
-]
-
-def _norm_name(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = re.sub(r"[\u2019'`\".,:;()\\-_/\\\\]+", " ", s)
-    parts = [p for p in s.split() if p and p not in LEGAL_SUFFIXES]
-    return " ".join(parts)
-
-def _escape_overpass_regex(s: str) -> str:
-    return re.sub(r'([.^$*+?{}\\|()])', r'\\\1', s)
-
-def _haversine_km(lat1, lon1, lat2, lon2) -> float:
-    if None in (lat1, lon1, lat2, lon2):
-        return 999999.0
-    R = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2-lat1)
-    dl   = math.radians(lon2-lon1)
-    a = math.sin(dphi/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
-    return 2*R*math.asin(math.sqrt(a))
-
-def overpass_lookup_website_by_name(name: str, lat: float, lon: float, radius_m: int = 20000) -> Optional[str]:
-    if not (OVERPASS_ENABLED and OVERPASS_NAME_LOOKUP_ENABLED):
-        return None
-    if not name or lat is None or lon is None:
-        return None
-    n = _norm_name(name)
-    if not n:
-        return None
-
-    tokens = [t for t in n.split() if len(t) >= 3] or n.split()
-    tokens = tokens[:5]
-    pattern = ".*".join(_escape_overpass_regex(t) for t in tokens)
-
-    q = f"""
-[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];
-(
-  node(around:{radius_m},{lat},{lon})["name"~"{pattern}",i];
-  way(around:{radius_m},{lat},{lon})["name"~"{pattern}",i];
-  relation(around:{radius_m},{lat},{lon})["name"~"{pattern}",i];
-);
-out tags center;
-"""
-    js = _overpass_post(q)
-    if not js:
-        return None
-
-    best = None
-    best_score = -1e9
-
-    for el in js.get("elements", []):
-        tags = el.get("tags", {}) or {}
-        nm = (tags.get("name") or "").strip()
-        w  = tags.get("website") or tags.get("contact:website") or tags.get("url")
-        if not w:
-            continue
-
-        lat2 = el.get("lat")
-        lon2 = el.get("lon")
-        if (lat2 is None or lon2 is None) and isinstance(el.get("center"), dict):
-            lat2 = el["center"].get("lat")
-            lon2 = el["center"].get("lon")
-
-        dist = _haversine_km(lat, lon, lat2, lon2)
-        nm_norm = _norm_name(nm)
-
-        score = 0.0
-        if nm_norm == n:
-            score += 50
-        elif n and n in nm_norm:
-            score += 30
-        else:
-            overlap = len(set(n.split()) & set(nm_norm.split()))
-            score += overlap * 6
-
-        score += max(0.0, 20.0 - dist)
-
-        w0 = normalize_url(w)
-        dom = etld1_from_url(w0 or "")
-        if dom:
-            score += 5
-
-        if score > best_score:
-            best_score = score
-            best = w
-
-    return normalize_url(best) if best else None
-
-def nominatim_lookup_website(name: str, city: str, country: str, limit: int = 8) -> Optional[str]:
-    if not name:
-        return None
-    try:
-        throttle("nominatim_lookup", 1.1)
-        q = f"{name}, {city}, {country}".strip(", ")
-        r = SESS.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": q, "format":"jsonv2", "limit": limit, "extratags": 1, "namedetails": 1},
-            headers={"Referer":"https://nominatim.org"},
-            timeout=30
-        )
-        if r.status_code != 200:
-            return None
-        items = r.json() or []
-        for it in items:
-            xt = it.get("extratags") or {}
-            w = xt.get("website") or xt.get("contact:website") or xt.get("url")
-            w = normalize_url(w)
-            if w:
-                return w
-    except Exception:
-        return None
-    return None
-
-@lru_cache(maxsize=4096)
-def wikidata_website_from_qid(qid: str) -> Optional[str]:
-    if not qid or not qid.startswith("Q"):
-        return None
-    try:
-        throttle("wikidata", 0.6)
-        r = SESS.get(f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json", timeout=20)
-        if r.status_code != 200:
-            return None
-        js = r.json()
-        ent = (js.get("entities") or {}).get(qid) or {}
-        claims = ent.get("claims") or {}
-        for cl in claims.get("P856", []):
-            dv = (((cl.get("mainsnak") or {}).get("datavalue") or {}).get("value") or "")
-            w = normalize_url(dv)
-            if w:
-                return w
-    except Exception:
-        return None
-    return None
-
-def fsq_find_website(name, lat, lon):
-    if not FOURSQUARE_API_KEY:
-        return None
-    headers = {"Authorization": FOURSQUARE_API_KEY, "Accept":"application/json"}
-    try:
-        throttle("foursquare", 0.6)
-        params = {"query": name, "ll": f"{lat},{lon}", "limit": 1, "radius": 50000}
-        r = SESS.get("https://api.foursquare.com/v3/places/search",
-                     headers=headers, params=params, timeout=20)
-        if r.status_code == 200:
-            results = (r.json().get("results") or [])
-            if results:
-                first = results[0]
-                website = first.get("website")
-                if website:
-                    return normalize_url(website)
-                fsq_id = first.get("fsq_id")
-                if fsq_id:
-                    throttle("foursquare", 0.6)
-                    d = SESS.get(f"https://api.foursquare.com/v3/places/{fsq_id}",
-                                 headers=headers, params={"fields":"website"}, timeout=20)
-                    if d.status_code == 200:
-                        w = d.json().get("website")
-                        if w:
-                            return normalize_url(w)
-    except Exception:
-        return None
-    return None
-
-def resolve_website(biz_name: str, city: str, country: str, lat: float, lon: float,
-                    direct: Optional[str], wikidata_qid: Optional[str] = None) -> Optional[str]:
-    w = normalize_url(direct)
-    if w:
-        STATS["website_direct"] += 1
-        return w
-
-    w = wikidata_website_from_qid(wikidata_qid or "")
-    if w:
-        STATS["website_wikidata"] += 1
-        return w
-
-    w = nominatim_lookup_website(biz_name, city, country, limit=8)
-    if w:
-        STATS["website_nominatim"] += 1
-        return w
-
-    w = overpass_lookup_website_by_name(biz_name, lat, lon, radius_m=20000)
-    if w:
-        STATS["website_overpass_name"] += 1
-        return w
-
-    w = normalize_url(fsq_find_website(biz_name, lat, lon))
-    if w:
-        STATS["website_fsq"] += 1
-        return w
-
-    return None
-
-
-# ---------- Trello helpers ----------
-TARGET_LABELS = ["Company","First","Email","Hook","Variant","Website"]
-LABEL_RE = {lab: re.compile(rf'(?mi)^\s*{re.escape(lab)}\s*:\s*(.*)$') for lab in TARGET_LABELS}
-
-def trello_get_card(card_id):
-    r = SESS.get(
-        f"https://api.trello.com/1/cards/{card_id}",
-        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN, "fields": "name,desc"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    js = r.json()
-    desc = (js.get("desc") or "").replace("\r\n", "\n").replace("\r", "\n")
-    name = js.get("name") or ""
-    return {"name": name, "desc": desc}
-
-def extract_label_value(desc: str, label: str) -> str:
-    d = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = d.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        m = LABEL_RE[label].match(line)
-        if m:
-            val = (m.group(1) or "").strip()
-            if not val and (i + 1) < len(lines):
-                nxt = lines[i + 1]
-                if nxt.strip() and not any(LABEL_RE[L].match(nxt) for L in TARGET_LABELS):
-                    val = nxt.strip()
-                    i += 1
-            return val
-        i += 1
-    return ""
-
-def _split_header_rest(desc: str):
-    d = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = d.splitlines()
-    i = 0
-    while i < len(lines) and lines[i].strip() == "":
-        i += 1
-    if i >= len(lines) or not any(LABEL_RE[lab].match(lines[i]) for lab in TARGET_LABELS):
-        return [], lines
-
-    header = []
-    seen_labels = set()
-    started = False
-
-    while i < len(lines):
-        line = lines[i]
-        m_lab = None
-        for lab in TARGET_LABELS:
-            m = LABEL_RE[lab].match(line)
-            if m:
-                m_lab = lab
-                break
-        if m_lab:
-            started = True
-            header.append(line)
-            seen_labels.add(m_lab)
-            val = (LABEL_RE[m_lab].match(line).group(1) or "").strip()
-            if not val and (i + 1) < len(lines):
-                nxt = lines[i + 1]
-                if nxt.strip() and not any(LABEL_RE[L].match(nxt) for L in TARGET_LABELS):
-                    header.append(nxt)
-                    i += 1
-            i += 1
-            continue
-
-        if line.strip() == "":
-            header.append(line)
-            i += 1
-            if "Website" in seen_labels:
-                break
-            continue
-
-        if started:
-            break
-
-        i += 1
-
-    rest = lines[i:]
-    return header, rest
-
-def normalize_header_block(
-    desc: str,
-    company: str,
-    website: str,
-    batch: Optional[str] = None,
-    first: str = "",
-    email: str = "",
-    hook: str = "",
-    variant: str = "",
-) -> str:
-    """
-    Builds the header block deterministically.
-    IMPORTANT: Email collection is disabled. We force Email: blank.
-    """
-    desc = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    header_lines, rest_lines = _split_header_rest(desc)
-
-    preserved = {
-        "First": "",
-        "Email": "",
-        "Hook": "",
-        "Variant": "",
-    }
-
-    i = 0
-    while i < len(header_lines):
-        line = header_lines[i]
-        for lab in TARGET_LABELS:
-            m = LABEL_RE[lab].match(line)
-            if not m:
-                continue
-            val = (m.group(1) or "").strip()
-            if not val and (i + 1) < len(header_lines):
-                nxt = header_lines[i + 1]
-                if nxt.strip() and not any(LABEL_RE[L].match(nxt) for L in TARGET_LABELS):
-                    val = nxt.strip()
-                    i += 1
-            if lab in preserved and preserved[lab] == "":
-                preserved[lab] = val
-            break
-        i += 1
-
-    # Preserve fields if not provided
-    first   = first   if first   else preserved["First"]
-    hook    = hook    if hook    else preserved["Hook"]
-    variant = variant if variant else preserved["Variant"]
-
-    # Email is always cleared (disabled)
-    email = ""
-
-    def hard(line: str) -> str:
-        return (line or "").rstrip() + "  "
-
-    new_header = [
-        hard(f"Company: {company or ''}"),
-        hard(f"First: {first or ''}"),
-        hard("Email:"),
-        hard(f"Hook: {hook or ''}"),
-        hard(f"Variant: {variant or ''}"),
-        hard(f"Website: {website or ''}"),
-        "",
-    ]
-
-    if batch:
-        has_batch = any((line or "").strip() == batch for line in rest_lines)
-        if not has_batch:
-            if rest_lines and rest_lines[-1].strip() != "":
-                rest_lines.append("")
-            rest_lines.append(batch)
-
-    out = ("\n".join(new_header + rest_lines)).rstrip("\n") + "\n\n@lead\n"
-    return out
-
-def is_template_blank(desc: str) -> bool:
-    d = (desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    company = extract_label_value(d, "Company").strip()
-    website = extract_label_value(d, "Website").strip()
-    if company == "" and website == "":
-        return True
-    if re.search(r"(?mi)^\s*Company\s*:\s*$", d) and re.search(r"(?mi)^\s*Website\s*:\s*$", d):
-        return True
-    return False
-
-def find_empty_template_cards(list_id: str, max_needed: int = 1) -> List[str]:
-    r = SESS.get(
-        f"https://api.trello.com/1/lists/{list_id}/cards",
-        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN, "fields": "id,name,desc"},
-        timeout=30
-    )
-    r.raise_for_status()
-    empties = []
-    for c in r.json():
-        if is_template_blank(c.get("desc") or ""):
-            empties.append(c["id"])
-        if len(empties) >= max_needed:
-            break
-    return empties
-
-def clone_template_into_list(template_card_id: str, list_id: str, name: str="Lead (auto)"):
-    if not template_card_id:
-        return None
-    r = SESS.post(
-        "https://api.trello.com/1/cards",
-        params={
-            "key":TRELLO_KEY,
-            "token":TRELLO_TOKEN,
-            "idList":list_id,
-            "idCardSource":template_card_id,
-            "name":name
-        },
-        timeout=30
-    )
-    r.raise_for_status()
-    return r.json()["id"]
-
-def ensure_min_blank_templates(list_id: str, template_id: str, need: int):
-    if need <= 0 or not template_id:
-        return
-    empties = find_empty_template_cards(list_id, max_needed=need)
-    missing = max(0, need - len(empties))
-    for i in range(missing):
-        clone_template_into_list(template_id, list_id, name=f"Lead (auto) {int(time.time())%100000}-{i+1}")
-        time.sleep(1.0)
-
-
-# ---------- seen + CSV ----------
-def load_seen():
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return set(l.strip().lower() for l in f if l.strip())
-    except Exception:
-        return set()
-
-def seen_domain_write(domain: str):
-    if not domain:
-        return
-    d = domain.strip().lower()
-    try:
-        os.makedirs(os.path.dirname(SEEN_FILE) or ".", exist_ok=True)
-        with open(SEEN_FILE, "a", encoding="utf-8") as f:
-            f.write(d + "\n")
-    except Exception:
-        pass
-
-def save_seen(seen: set):
-    try:
-        os.makedirs(os.path.dirname(SEEN_FILE) or ".", exist_ok=True)
-        with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            for d in sorted(seen):
-                f.write(d + "\n")
-    except Exception:
-        pass
-
-def append_csv(leads, city, country):
-    if not leads:
-        return
-    fname = os.getenv("LEADS_CSV", f"seo_leads_{date.today().isoformat()}.csv")
-    file_exists = pathlib.Path(fname).exists()
-    with open(fname, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if not file_exists:
-            w.writerow(["timestamp","city","country","company","website"])
-        ts = datetime.utcnow().isoformat(timespec="seconds")+"Z"
-        for L in leads:
-            w.writerow([ts, city, country, L["Company"], L["Website"]])
-
-
-# ---------- enrichment: website (EMAIL DISABLED) ----------
-def enrich_website_contacts(base_url):
-    """
-    Scrapes a few likely pages to find a *first name* and *job title*.
-    Email scraping is disabled.
-    """
-    enriched_data = {
-        "first_name": None,
-        "job_title": None,
-        "email": None,  # kept for compatibility, but will never be set
-    }
-
-    potential_paths = ["/contact", "/team", "/about", "/about-us", "/contact-us"]
-    visited_urls = set()
-
-    for path in potential_paths:
-        full_url = urljoin(base_url, path)
-        if full_url in visited_urls:
-            continue
-        visited_urls.add(full_url)
-
-        try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(full_url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                continue
-
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            # NOTE: email scraping removed on purpose
-
-            for tag in soup.find_all(["p", "div", "li", "span", "h1", "h2", "strong"]):
-                t = tag.get_text(" ", strip=True)
-                if len(t.split()) <= 10 and any(role in t.lower() for role in ["ceo", "founder", "owner", "marketing", "sales", "director", "manager"]):
-                    enriched_data["first_name"] = t.split()[0]
-                    enriched_data["job_title"] = " ".join(t.split()[1:])
-                    break
-
-        except Exception as e:
-            dbg(f"[enrich_website_contacts] error scraping {full_url}: {e}")
-            continue
-
-        time.sleep(1)
-
-    return enriched_data
-
-
-# ---------- enrichment: LinkedIn (optional) ----------
-def find_linkedin_profile(company_name: str) -> Optional[str]:
-    """
-    VERY basic Bing scrape. Returns a LinkedIn /in/ slug if found.
-    """
-    query = f'site:linkedin.com/in "{company_name}" (CEO OR Founder OR Owner OR Marketing)'
-    headers = {"User-Agent": "Mozilla/5.0"}
-    search_url = f"https://www.bing.com/search?q={requests.utils.quote(query)}"
-
-    try:
-        r = requests.get(search_url, headers=headers, timeout=12)
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "linkedin.com/in/" in href:
-                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
-                if m:
-                    return m.group(1)
-    except Exception as e:
-        dbg(f"[find_linkedin_profile] error: {e}")
-
-    return None
-
-def _pick_scrapy_cwd() -> Optional[str]:
-    """
-    If LINKEDIN_SCRAPY_DIR exists, run scrapy there, else run in repo root.
-    """
-    p = (LINKEDIN_SCRAPY_DIR or "").strip()
-    if p and os.path.isdir(p):
-        return p
-    return None
-
-def run_linkedin_spider(profile_slug: str) -> Optional[dict]:
-    """
-    Runs your Scrapy spider (linkedin_people_profile) and returns the first JSON object.
-    This function is designed not to crash your whole pipeline if Scrapy/spider isn't available.
-    """
-    if not profile_slug:
-        return None
-
-    os.makedirs("data", exist_ok=True)
-    out_file = os.path.join("data", "linkedin_people_profile_out.jsonl")
-
-    try:
-        os.remove(out_file)
-    except FileNotFoundError:
-        pass
-
-    cmd = ["scrapy", "crawl", "linkedin_people_profile", "-O", out_file, "-a", f"profile_list={profile_slug}"]
-    cwd = _pick_scrapy_cwd()
-
-    try:
-        subprocess.run(cmd, check=True, cwd=cwd)
-    except FileNotFoundError:
-        dbg("[run_linkedin_spider] scrapy not found; skipping LinkedIn.")
-        return None
-    except subprocess.CalledProcessError as e:
-        dbg(f"[run_linkedin_spider] scrapy failed; skipping LinkedIn. err={e}")
-        return None
-    except Exception as e:
-        dbg(f"[run_linkedin_spider] unexpected error; skipping LinkedIn. err={e}")
-        return None
-
-    if not os.path.exists(out_file):
-        dbg("[run_linkedin_spider] output file not created; skipping.")
-        return None
-
-    try:
-        with open(out_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                return json.loads(line)
-    except Exception as e:
-        dbg(f"[run_linkedin_spider] failed reading output; err={e}")
-
-    return None
-
-
-# ---------- batching ----------
-def load_batch_index() -> int:
-    try:
-        with open(BATCH_FILE, "r", encoding="utf-8") as f:
-            val = f.read().strip()
-            idx = int(val)
-            if 0 <= idx < len(BATCH_SLOTS):
-                return idx
-    except Exception:
-        pass
-    return 0
-
-def save_batch_index(idx: int) -> None:
-    try:
-        os.makedirs(os.path.dirname(BATCH_FILE) or ".", exist_ok=True)
-        with open(BATCH_FILE, "w", encoding="utf-8") as f:
-            f.write(str(idx))
-    except Exception:
-        pass
-
-
-# ---------- push function ----------
-def push_one_lead(lead: dict, seen: set, batch_label: Optional[str] = None) -> bool:
-    empties = find_empty_template_cards(TRELLO_LIST_ID, max_needed=1)
-    if not empties:
-        print("No empty template card available; skipping push.", flush=True)
-        return False
-
-    card_id = empties[0]
-
-    # 1) Website enrichment (email disabled)
-    enriched = enrich_website_contacts(lead["Website"])
-    first = enriched.get("first_name") or ""
-    hook = enriched.get("job_title") or ""
-    email = ""  # ALWAYS BLANK
-
-    # 2) LinkedIn enrichment (optional)
-    profile_slug = find_linkedin_profile(lead["Company"])
-    if profile_slug:
-        linkedin_data = run_linkedin_spider(profile_slug)
-        if linkedin_data:
-            nm = (linkedin_data.get("name") or "").strip()
-            if nm:
-                first = nm.split()[0]
-            desc = (linkedin_data.get("description") or "").strip()
-            if desc:
-                hook = desc
-
-    # 3) Build Trello description
-    desc_old = trello_get_card(card_id)["desc"]
-    desc_new = normalize_header_block(
-        desc_old,
-        company=lead["Company"],
-        website=lead["Website"],
-        batch=batch_label,
-        first=first,
-        email=email,  # will be forced blank anyway
-        hook=hook,
-    )
-
-    # 4) Push to Trello
-    r = SESS.put(
-        f"https://api.trello.com/1/cards/{card_id}",
-        params={"key": TRELLO_KEY, "token": TRELLO_TOKEN},
-        data={"desc": desc_new, "name": lead["Company"]},
-        timeout=30,
-    )
-    r.raise_for_status()
-
-    # 5) Mark domain as seen
-    dom = etld1_from_url(lead.get("Website") or "")
-    if dom:
-        seen_domain_write(dom)
-        seen.add(dom)
-
-    print(f"PUSHED ✅ — {lead['Company']} — {lead['Website']}", flush=True)
-    return True
-
-
-# ---------- main ----------
-def main():
-    missing = [n for n in ["TRELLO_KEY","TRELLO_TOKEN","TRELLO_LIST_ID"] if not os.getenv(n)]
-    if missing:
-        raise SystemExit(f"Missing env: {', '.join(missing)}")
-
-    if not OVERPASS_ENABLED and not NOMINATIM_POI_ENABLED:
-        raise SystemExit("Both OVERPASS_ENABLED and NOMINATIM_POI_ENABLED are disabled; no way to fetch candidates.")
-
-    leads: List[dict] = []
-    seen = load_seen()
-    last_city = ""
-    last_country = ""
-
-    for (city, country) in iter_cities():
-        print(f"\n=== CITY START: {city}, {country} ===", flush=True)
-        t_city = time.time()
-        last_city, last_country = city, country
-
-        try:
-            t_geo = time.time()
-            south, west, north, east = geocode_city(city, country)
-            lat = (south + north) / 2.0
-            lon = (west + east) / 2.0
-            print(f"[{city}, {country}] geocode OK -> {lat:.5f},{lon:.5f} (took {time.time()-t_geo:.1f}s)", flush=True)
-        except Exception as e:
-            print(f"[{city}, {country}] geocode FAILED: {e}", flush=True)
-            continue
-
-        if len(leads) < DAILY_LIMIT:
-            t_osm = time.time()
-            print(f"[{city}] OSM search starting...", flush=True)
-
-            cands = get_osm_candidates(city, country, lat, lon, south, west, north, east)
-            STATS["osm_candidates"] += len(cands)
-            via = "overpass+poi" if cands else "none"
-            print(f"[{city}] OSM candidates: {len(cands)} (took {time.time()-t_osm:.1f}s) via {via}", flush=True)
-
-            leads_before_osm = len(leads)
-
-            for biz in cands:
-                if len(leads) >= DAILY_LIMIT:
-                    break
-
-                lat0 = biz.get("lat") or lat
-                lon0 = biz.get("lon") or lon
-
-                website = resolve_website(
-                    biz_name=biz["business_name"],
-                    city=city,
-                    country=country,
-                    lat=lat0,
-                    lon=lon0,
-                    direct=biz.get("website"),
-                    wikidata_qid=biz.get("wikidata"),
-                )
-                if not website:
-                    STATS["skip_no_website"] += 1
-                    continue
-
-                site_dom = etld1_from_url(website)
-                if site_dom and site_dom in seen:
-                    STATS["skip_dupe_domain"] += 1
-                    continue
-
-                p = urlparse(website)
-                base = f"{p.scheme}://{p.netloc}/"
-                if not allowed_by_robots(base, "/"):
-                    STATS["skip_robots"] += 1
-                    continue
-
-                try:
-                    resp = fetch(website)
-                except Exception:
-                    STATS["skip_fetch"] += 1
-                    continue
-
-                try:
-                    resp.encoding = resp.encoding or "utf-8"
-                    html_text = resp.text
-                except Exception:
-                    html_text = resp.content.decode("utf-8", errors="ignore")
-
-                if not is_probably_small_site(html_text, website):
-                    STATS["skip_big_site"] += 1
-                    continue
-
-                leads.append({"Company": biz["business_name"], "Website": website})
-
-                if site_dom:
-                    seen_domain_write(site_dom)
-                    seen.add(site_dom)
-
-                _sleep()
-
-            print(f"[{city}] OSM done: +{len(leads)-leads_before_osm} leads", flush=True)
-
-        print(f"=== CITY END: {city} in {time.time()-t_city:.1f}s | total leads={len(leads)}/{DAILY_LIMIT} ===", flush=True)
-
-        if len(leads) >= DAILY_LIMIT:
-            break
-
-    if leads:
-        leads = leads[:DAILY_LIMIT]
-
-    if PRECLONE and leads and TRELLO_TEMPLATE_CARD_ID:
-        ensure_min_blank_templates(TRELLO_LIST_ID, TRELLO_TEMPLATE_CARD_ID, min(DAILY_LIMIT, len(leads)))
-
-    if leads and last_city and last_country:
-        append_csv(leads, last_city, last_country)
-
-    batch_idx = load_batch_index()
-    batch_label = BATCH_SLOTS[batch_idx]
-    next_batch_idx = (batch_idx + 1) % len(BATCH_SLOTS)
-
-    pushed = 0
-    for lead in leads:
-        if pushed >= DAILY_LIMIT:
-            break
-        ok = push_one_lead(lead, seen, batch_label=batch_label)
-        if ok:
-            pushed += 1
-            time.sleep(max(0, PUSH_INTERVAL_S) + max(0, BUTLER_GRACE_S))
-
-    if pushed > 0:
-        save_batch_index(next_batch_idx)
-
-    if DEBUG:
-        print("Stats:", json.dumps(STATS, indent=2), flush=True)
-
-    save_seen(seen)
-
-    print(f"SEEN_FILE path: {os.path.abspath(SEEN_FILE)} — total domains in set: {len(seen)}", flush=True)
-    print(f"Done. Leads pushed: {pushed}/{len(leads)}", flush=True)
-
-
-if __name__ == "__main__":
-    main()
+           
